@@ -5,7 +5,7 @@ CC Pulse 状态上报端 (F1)
 原子写入 Windows 可读的 state 目录，供 Windows 悬浮窗 (Viewer) 渲染。
 
 注册方式：在 ~/.claude/settings.json 的对应事件下挂
-    {"type": "command", "command": "python3 /home/leo/.claude/hooks/cc-pulse-report.py"}
+    {"type": "command", "command": "python3 ~/.claude/hooks/cc-pulse-report.py"}
 事件 → 动作：
     SessionStart      -> 注册会话，status=done(空闲/就绪)
     UserPromptSubmit  -> status=busy

@@ -12,7 +12,7 @@
 
 ### ✅ 已完成（F1 状态上报端，无需再动）
 
-1. **上报脚本**：`/home/leo/.claude/hooks/cc-pulse-report.py`（Python，单文件，已实现完整 6 事件状态机、label 解析、进程树抓 claude PID、原子写、异常吞掉 exit 0）。
+1. **上报脚本**：`~/.claude/hooks/cc-pulse-report.py`（Python，单文件，已实现完整 6 事件状态机、label 解析、进程树抓 claude PID、原子写、异常吞掉 exit 0）。
 2. **hook 注册**：已写入 `~/.claude/settings.json`，6 个事件均挂 `python3 .../cc-pulse-report.py`，与原有 hook 并存（备份在 `settings.json.bak.*`）。
 3. **验证结果**：7 步模拟全过 + 当前真实会话实测产出正确 state 文件。状态机、Notification 忙/闲区分规则、跨 WSL→Windows 原子写均确认可用。
 
@@ -93,8 +93,8 @@
 - **体积约束（硬性）**：最终 exe **≤ 30MB**，目标 10MB 上下。据此放弃 PySide6/Electron 等重型 GUI 栈。
 - **账号系统**：不需要。
 - **数据**：全部本地。状态文件落在 Windows 与 WSL 都能访问的路径：
-  - Windows 侧：`%LOCALAPPDATA%\cc-pulse\state\`（即 `C:\Users\Le'o\AppData\Local\cc-pulse\state\`）
-  - WSL 侧：`/mnt/c/Users/Le'o/AppData/Local/cc-pulse/state/`（路径含 `'`，所有脚本必须加引号）
+  - Windows 侧：`%LOCALAPPDATA%\cc-pulse\state\`（即 `C:\Users\<你的用户名>\AppData\Local\cc-pulse\state\`）
+  - WSL 侧：`/mnt/c/Users/<你的用户名>/AppData/Local/cc-pulse/state/`（若用户名含空格或 `'` 等特殊字符，所有脚本路径必须加引号）
 - **第三方依赖**：无网络服务。仅依赖 Claude Code 自带 hook 机制 + 打包进 exe 的运行时。
 
 ### 1.6 文案人设（全局）
