@@ -382,7 +382,7 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 | F2 列表 | `_tick`/`_render_list`（每 800ms 轮询） | 按 `updated_at` 降序，label + 三态色点，默认 3 行可滚动 |
 | F3 宠物 | `pixelpet.py`/`_render_pet`/`_animate` | 无会话→**程序化像素宠物**（纯代码逐帧，无图片）：6 形象（发呆/思考/敲代码/庆祝/星光/睡觉）每 10–20s 随机切换；1.5s 防抖 |
 | F4 标题栏 | `toggle_pin`/`toggle_settings`/`close` | 📌 置顶切换 / ⚙️ 设置 / ✕ 退出 |
-| F5 设置 | `_open_settings` + `_save_config` | 透明度(20–100)/宽/高 + 宠物文字开关，即时原子持久化 |
+| F5 设置 | `_open_settings` + `_save_config` | 透明度(20–100)/字号偏移(-5~+5)/宽/高/红点提示音开关，即时原子持久化 |
 | F6 清理 | `_reap`/`query_alive_pids`/`reaper_decide`（每 5s） | 经 `wsl.exe` 批量 `kill -0` 判活删死会话；pid=0 走 30min 超时；wsl 不可用退化为超时 |
 
 ---
@@ -485,16 +485,13 @@ COLOR_BUSY = "#FFC107"      # 黄色
 COLOR_NEEDS_YOU = "#F44336" # 红色
 ```
 
-### Q: 如何修改窗口默认位置？
+### Q: 如何修改窗口位置和大小？
 
-编辑 `cc_pulse_viewer.py`，搜索 `self.geometry`，修改窗口位置和大小：
-```python
-self.geometry("300x200+100+100")  # 宽300 高200 距左边100 距顶部100
-```
+直接**拖拽标题栏**移动窗口，位置会自动记住（持久化到 `config.json` 的 `pos_x`/`pos_y`）；窗口大小在设置面板（⚙️）「尺寸」组里调「宽 / 高」。两者都无需改代码。首次启动默认在主屏右上角。
 
-### Q: 如何隐藏宠物文字标签？
+### Q: 列表字太小/太大，怎么调？
 
-在设置面板（⚙️）中取消勾选「显示宠物文字」。
+在设置面板（⚙️）「显示」组里拖动「字号偏移」滑块（-5 ~ +5，每档 ±1px）。
 
 ### Q: 如何修改透明度？
 
