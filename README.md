@@ -3,7 +3,63 @@
 不切窗口，瞄一眼桌面角落即可掌握每个 Claude Code 会话的三态：
 🟡 忙 / 🔴 等你操作 / 🟢 已完成。无会话时降级为一只打盹的像素小 Claude。
 
-## 架构
+## ✨ 效果展示
+
+### 🖥️ 实际使用效果
+
+<p align="center">
+  <img src="assets/demo-terminal.png" width="600" alt="Claude Code 终端 + 桌面宠物">
+</p>
+
+<p align="center">
+  <em>左下角的像素小宠物，实时显示你的 Claude Code 状态</em>
+</p>
+
+### 🔴🟡🟢 三态状态展示
+
+<p align="center">
+  <img src="assets/demo-states.png" width="200" alt="三态状态">
+</p>
+
+<p align="center">
+  <em>🔴 等你操作 / 🟢 已完成 — 状态一目了然</em>
+</p>
+
+### 🐾 六种像素宠物形态（无会话时随机切换）
+
+<table align="center">
+  <tr>
+    <td align="center"><img src="assets/发呆.gif" width="80" alt="发呆"></td>
+    <td align="center"><img src="assets/思考.gif" width="80" alt="思考"></td>
+    <td align="center"><img src="assets/电脑.gif" width="80" alt="电脑"></td>
+    <td align="center"><img src="assets/撒花.gif" width="80" alt="撒花"></td>
+    <td align="center"><img src="assets/星光.gif" width="80" alt="星光"></td>
+    <td align="center"><img src="assets/睡觉.gif" width="80" alt="睡觉"></td>
+  </tr>
+  <tr>
+    <td align="center">发呆</td>
+    <td align="center">思考</td>
+    <td align="center">敲代码</td>
+    <td align="center">撒花</td>
+    <td align="center">星光</td>
+    <td align="center">睡觉</td>
+  </tr>
+</table>
+
+---
+
+## 🚀 核心特性
+
+- **零侵入** — 无需修改 Claude Code 代码，纯 hook 实现
+- **实时状态** — 🟡 忙 / 🔴 等你操作 / 🟢 已完成，一目了然
+- **像素宠物** — 无会话时显示 6 种可爱形象，随机切换
+- **纯标准库** — 仅依赖 tkinter + Python 标准库，无第三方依赖
+- **轻量打包** — 单 exe 仅 8-12MB，满足 ≤30MB 硬约束
+- **跨环境** — 支持 Windows / WSL / macOS（需虚拟机访问 Windows 文件系统）
+
+---
+
+## 🏗️ 架构
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -26,7 +82,7 @@
 
 ---
 
-## 快速开始
+## 📦 快速开始
 
 ### Step 1: 安装 Python（Windows）
 
@@ -270,7 +326,14 @@ CC Pulse/
 ├── hooks/
 │   └── cc-pulse-report.py      # F1 上报端 hook（需要复制到 ~/.claude/hooks/）
 ├── assets/
-│   ├── claude_sleep.gif        # (已弃用) 旧 gif 宠物
+│   ├── 发呆.gif                # 像素宠物：发呆形态
+│   ├── 思考.gif                # 像素宠物：思考形态
+│   ├── 电脑.gif                # 像素宠物：敲代码形态
+│   ├── 撒花.gif                # 像素宠物：撒花形态
+│   ├── 星光.gif                # 像素宠物：星光形态
+│   ├── 睡觉.gif                # 像素宠物：睡觉形态
+│   ├── demo-terminal.png       # 效果图：Claude Code 终端 + 桌面宠物
+│   ├── demo-states.png         # 效果图：三态状态展示
 │   └── notify.wav              # 提示音
 ├── run.bat                     # Windows 快速运行
 ├── build/
