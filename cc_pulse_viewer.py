@@ -22,6 +22,8 @@ CC Pulse — Windows 悬浮状态栏 (Viewer)  F2–F6
 import glob
 import json
 import os
+import pathlib
+import queue
 import subprocess
 import sys
 import tempfile
@@ -61,7 +63,13 @@ SEP = "#383838"
 ACCENT = "#46C28E"
 
 TITLEBAR_H = 26
-VISIBLE_ROWS = 3            # 默认可视 3 行，超出滚动
+GRIP_H = 8                  # 底边高度调节热区厚度（px）：与背景同色不可见，靠近即变拉伸光标
+# 固定行高（px）。可视条数 = 可用高度 // ROW_H，随面板高度自适应（拉高 → 多排几条，
+# 而非把固定几条拉胖）。40 = 紧凑单行（一行文字 + 舒适留白），偏紧/偏松改这个数即可。
+ROW_H = 40
+# 固定字号（px）。与行高解耦——调行高不再连带缩放字体；用户档位偏移叠加在此基础上。
+# 9 = 原 13 基准下 -4 档的字号，定为新默认；设置面板「字号偏移」在此基础上 ±5 档微调。
+BASE_FONT = 9
 POLL_MS = 200              # 状态轮询周期（无变化时由 _last_sig 跳过重绘，CPU 开销可忽略）
 REAP_MS = 5000             # 残留清理周期（5s）
 ANIM_MS = 120              # 宠物动画帧间隔（程序化像素逐帧）
@@ -310,8 +318,10 @@ def query_alive_pids(pids, timeout=4.0):
         )
     except Exception:
         return None
-    if r.returncode != 0:
-        return None
+    # 不能用 returncode 判成败：bash -c 的退出码 = 最后一条命令的退出码，最后一个
+    # 探测 pid 若已死，"kill -0 && echo" 短路会让整体退出码为 1，把这份本来正确的
+    # 判活结果整个误丢成 None（退回超时判废）。改以 __WSLOK__ 哨兵确认脚本确实跑过；
+    # 各 pid 存活与否由它自己有没有 echo 出来表达，与整体退出码无关。
     lines = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
     if "__WSLOK__" not in lines:
         return None
@@ -421,7 +431,24 @@ class CCPulseViewer:
         self._prev_status = {}       # session_id → 上一轮 status，用于红点边沿检测
         self._last_alert_t = 0.0     # 上次播放提示音的时刻（节流）
 
+        # 系统托盘（仅 Windows）。托盘线程经队列把动作回交主线程消费（tkinter 非线程安全）。
+        self._tray_q = queue.Queue()
+        self.tray = None
+        if IS_WINDOWS:
+            try:
+                import tray as _tray
+                self.tray = _tray.TrayIcon(
+                    tip="CC Pulse",
+                    on_show=lambda: self._tray_q.put("show"),
+                    on_exit=lambda: self._tray_q.put("exit"))
+                self.tray.start()
+                self.tray.add()       # 常驻：启动即显示托盘图标，不随窗口显隐增删
+            except Exception as e:
+                log("tray init failed: %r" % e)
+                self.tray = None
+
         self._build_titlebar()
+        self._build_resize_grip()      # 底边拖拽热区（须在主体之前 pack，占住底部）
         self._build_body()
 
         self.root.bind("<Configure>", self._on_configure, add="+")
@@ -429,6 +456,7 @@ class CCPulseViewer:
         self.root.after(50, self._tick)
         self.root.after(REAP_MS, self._reap)
         self.root.after(ANIM_MS, self._animate)
+        self.root.after(150, self._poll_tray)    # 消费托盘线程的动作
 
     # ── 窗口放置 ────────────────────────────────────────────────────────────
     def _place_window(self):
@@ -454,14 +482,15 @@ class CCPulseViewer:
         bar.pack_propagate(False)
         self.titlebar = bar
 
-        # 右侧三控件：✕ ⚙ 📌（从右往左 pack）
+        # 右侧四控件：✕ ⚙ — 📌（从右往左 pack → 视觉 📌 — ⚙ ✕）
         self.btn_close = self._titlebar_btn(bar, "✕", self.close, "退出")
         self.btn_settings = self._titlebar_btn(bar, "⚙", self.toggle_settings, "设置")
+        self.btn_min = self._titlebar_btn(bar, "—", self.minimize_to_tray, "最小化到托盘")
         self.btn_pin = self._titlebar_btn(bar, "📌", self.toggle_pin, "置顶/取消置顶")
         self._refresh_pin()
 
         # 拖拽：标题栏空白区（排除按钮，避免拖拽+按钮动作同时触发）
-        btns = {self.btn_close, self.btn_settings, self.btn_pin}
+        btns = {self.btn_close, self.btn_settings, self.btn_min, self.btn_pin}
         for w in (bar,) + tuple(bar.winfo_children()):
             if w not in btns:
                 w.bind("<Button-1>", self._drag_start, add="+")
@@ -501,6 +530,42 @@ class CCPulseViewer:
         self.canvas.bind("<B1-Motion>", self._drag_move, add="+")
         self.canvas.bind("<ButtonRelease-1>", self._drag_end, add="+")
 
+    # ── 底边高度调节（拖拽热区，仿系统窗口下边缘）─────────────────────────────
+    def _build_resize_grip(self):
+        # 与背景同色的薄条铺在最底部：平时看不见，鼠标靠近即显示上下拉伸光标，
+        # 按住上下拖动直接改高度。手动在设置里填「高(px)」的方式不受影响。
+        grip = tk.Frame(self.root, bg=BG, height=GRIP_H,
+                        cursor="sb_v_double_arrow")
+        grip.pack(side="bottom", fill="x")
+        grip.pack_propagate(False)
+        self.resize_grip = grip
+        self._grip0 = (0, 0)
+        grip.bind("<Button-1>", self._grip_start, add="+")
+        grip.bind("<B1-Motion>", self._grip_move, add="+")
+        grip.bind("<ButtonRelease-1>", self._grip_end, add="+")
+
+    def _grip_start(self, e):
+        self._grip0 = (e.y_root, self.root.winfo_height())
+
+    def _grip_move(self, e):
+        start_y, start_h = self._grip0
+        lo, hi = CONFIG_RANGES["height"]
+        new_h = max(lo, min(hi, start_h + (e.y_root - start_y)))
+        self.root.geometry("%dx%d+%d+%d" % (
+            self.root.winfo_width(), new_h,
+            self.root.winfo_x(), self.root.winfo_y()))
+        self.cfg["height"] = new_h
+        self._last_sig = None       # 立即按新高度重排可见条数
+        # 设置面板若开着，同步「高(px)」输入框
+        if self.settings_win is not None and hasattr(self, "var_h"):
+            try:
+                self.var_h.set(new_h)
+            except tk.TclError:
+                pass
+
+    def _grip_end(self, _e):
+        self._save_config()
+
     # ── 拖拽 ──────────────────────────────────────────────────────────────────
     def _drag_start(self, e):
         self._drag = (e.x_root - self.root.winfo_x(),
@@ -529,15 +594,15 @@ class CCPulseViewer:
 
     # ── 度量 ────────────────────────────────────────────────────────────────
     def _body_h(self):
-        return max(40, self.root.winfo_height() - TITLEBAR_H)
+        return max(40, self.root.winfo_height() - TITLEBAR_H - GRIP_H)
 
     def _row_h(self):
-        return max(22, self._body_h() // VISIBLE_ROWS)
+        # 固定行高：拉高面板时不放大每行，而是多容纳几行（放不下走滚动）。
+        return ROW_H
 
     def _font_size(self):
-        # 0 档 = 随行高等比缩放（带上下限）；再叠加用户档位偏移（每档 ±1px）
-        base = max(8, min(16, int(self._row_h() * 0.24)))
-        return max(7, min(28, base + int(self.cfg.get("font_level", 0))))
+        # 固定字号（与行高解耦），再叠加用户档位偏移（每档 ±1px）
+        return max(6, min(28, BASE_FONT + int(self.cfg.get("font_level", 0))))
 
     # ── 红点提示音 (F2-3 听觉增强) ────────────────────────────────────────────
     def _check_alerts(self, states):
@@ -719,7 +784,46 @@ class CCPulseViewer:
         self.cfg["pos_x"] = self.root.winfo_x()
         self.cfg["pos_y"] = self.root.winfo_y()
         self._save_config()
+        if self.tray is not None:
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
         self.root.destroy()
+
+    # ── 最小化到系统托盘 ──────────────────────────────────────────────────────
+    def minimize_to_tray(self):
+        if self.tray is None:
+            log("minimize ignored: tray unavailable")
+            return
+        try:
+            self.root.withdraw()        # 仅隐藏主面板；托盘图标常驻不动
+        except Exception as e:
+            log("minimize failed: %r" % e)
+
+    def _restore_from_tray(self):
+        # 点托盘图标 → 显示主面板。图标常驻，不在此移除。
+        try:
+            self.root.deiconify()
+            self.root.overrideredirect(True)    # 部分环境 deiconify 会丢无边框，重置
+            self.root.attributes("-topmost", self.cfg["always_on_top"])
+            self.root.lift()
+        except Exception as e:
+            log("restore failed: %r" % e)
+
+    def _poll_tray(self):
+        """主线程消费托盘线程投递的动作（show/exit）。"""
+        try:
+            while True:
+                action = self._tray_q.get_nowait()
+                if action == "show":
+                    self._restore_from_tray()
+                elif action == "exit":
+                    self.close()
+                    return
+        except queue.Empty:
+            pass
+        self.root.after(150, self._poll_tray)
 
     # ── 设置面板 (F5) ─────────────────────────────────────────────────────────
     def toggle_settings(self):

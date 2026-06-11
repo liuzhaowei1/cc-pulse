@@ -82,15 +82,19 @@ def proc_cmdline(pid):
 
 
 def find_claude_pid():
-    """从本脚本进程往上走进程树，找到 cmdline 含 'claude' 的祖先 PID（即本会话的 claude 主进程），
-    供 Viewer 端 reaper 用 kill -0 判活。找不到返回 0（回退到超时判废）。"""
+    """从本脚本进程往上走进程树，找到 claude 主进程 PID（与会话同生命周期），
+    供 Viewer 端 reaper 用 kill -0 判活。找不到返回 0（回退到超时判废）。
+
+    必须按可执行文件名匹配（argv[0] 的 basename == 'claude'），不能用 'claude'
+    子串——否则会被 /home/<用户>/.claude/... 路径、以及跑 hook 的 /bin/bash 临时
+    包装进程误命中，记到一个几秒就死的 pid，导致 pid 判活永远失效。"""
     try:
         pid = os.getppid()
         for _ in range(20):
             if pid <= 1:
                 break
-            cmd = proc_cmdline(pid)
-            if "claude" in cmd.lower():
+            argv0 = proc_cmdline(pid).split(" ", 1)[0]
+            if os.path.basename(argv0) == "claude":
                 return pid
             ppid = read_proc_field(pid, "PPid")
             if not ppid:

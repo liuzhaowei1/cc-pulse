@@ -52,6 +52,8 @@
 
 - **零侵入** — 无需修改 Claude Code 代码，纯 hook 实现
 - **实时状态** — 🟡 忙 / 🔴 等你操作 / 🟢 已完成，一目了然
+- **高度可调** — 列表行数随面板高度自适应：拖窗口**底边**即可调高（也可在设置里填高度），同开多个会话时一屏多看几条
+- **最小化到托盘** — 收进系统托盘常驻（像微信，始终在托盘）：左键唤起主面板、右键菜单「显示 / 退出」；托盘图标由像素「睡觉」宠物经 `ctypes` 调 `Shell_NotifyIcon` 程序化生成，零第三方依赖，仅 Windows 生效（其他平台自动 no-op）
 - **声音提醒** — 任意会话转入 🔴「等你操作」的那一刻播放提示音（`assets/notify.wav`），可在设置里「红点亮起播放提示音」开关；仅 Windows 生效，WSL/其他平台自动静默降级；换音效直接覆盖 `assets/notify.wav`（须为 WAV）即可
 - **像素宠物** — 无会话时显示 6 种可爱形象，随机切换
 - **纯标准库** — 仅依赖 tkinter + Python 标准库，无第三方依赖
@@ -80,6 +82,7 @@
 - ✅ F2–F6 展示端（Windows tkinter 悬浮窗）
 - ✅ F1 上报端（Claude Code hook 脚本）
 - ✅ 像素宠物引擎（纯代码 6 形象）
+- ✅ 系统托盘（纯 ctypes，零依赖）
 
 ---
 
@@ -324,6 +327,7 @@ ls -la "/mnt/c/Users/你的用户名/AppData/Local/cc-pulse/state/"
 CC Pulse/
 ├── cc_pulse_viewer.py          # 主程序（F2–F6，纯 tkinter 标准库）
 ├── pixelpet.py                 # 程序化像素宠物引擎（纯代码 6 形象）
+├── tray.py                     # 系统托盘图标（纯 ctypes 调 Shell_NotifyIcon，零依赖；仅 Windows）
 ├── hooks/
 │   └── cc-pulse-report.py      # F1 上报端 hook（需要复制到 ~/.claude/hooks/）
 ├── assets/
