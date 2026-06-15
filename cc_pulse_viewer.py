@@ -180,6 +180,22 @@ def atomic_write_json(path, obj):
         raise
 
 
+def format_tokens(t):
+    """上下文占用 token → 紧凑显示。<10k 保留一位小数(4.6k)，≥10k 取整(35k/235k)，
+    与 /context 风格一致。0/缺失 → 空串（不显示）。"""
+    try:
+        t = int(t)
+    except (TypeError, ValueError):
+        return ""
+    if t <= 0:
+        return ""
+    if t >= 10000:
+        return "%dk" % round(t / 1000)
+    if t >= 1000:
+        return "%.1fk" % (t / 1000)
+    return str(t)
+
+
 def parse_iso(s):
     """ISO8601(带时区) → epoch 秒；解析失败返回 None。"""
     if not s:
@@ -223,6 +239,7 @@ def read_states(sdir):
             "cwd": obj.get("cwd", ""),
             "pid": int(obj.get("pid") or 0),
             "updated_at": obj.get("updated_at", ""),
+            "ctx_tokens": int(obj.get("ctx_tokens") or 0),
             "_ts": parse_iso(obj.get("updated_at")) or 0.0,
             "_path": fp,
         })
@@ -676,7 +693,8 @@ class CCPulseViewer:
 
         # 渲染签名：内容/尺寸/滚动无变化则跳过重绘
         sig = (w, body_h, self.scroll_off,
-               tuple((s["session_id"], s["status"], s["label"]) for s in states))
+               tuple((s["session_id"], s["status"], s["label"], s.get("ctx_tokens", 0))
+                     for s in states))
         if sig == self._last_sig:
             return
         self._last_sig = sig
@@ -684,8 +702,13 @@ class CCPulseViewer:
         c = self.canvas
         c.delete("all")
         font = tkfont.Font(family="Microsoft YaHei UI", size=fsize)
+        ctx_font = tkfont.Font(family="Microsoft YaHei UI", size=max(6, fsize - 1))
         dot_r = max(4, int(row_h * 0.14))
         pad = 12
+        # 第三列（最右）固定宽度：按最宽 token 串预留，保证色点纵向对齐——
+        # 即使某些会话还没上报 ctx_tokens，色点列位置也不随之左右跳动。
+        ctx_col_w = ctx_font.measure("888k")
+        ctx_gap = 8
 
         for idx, s in enumerate(states):
             y0 = idx * row_h - self.scroll_off
@@ -695,8 +718,13 @@ class CCPulseViewer:
             # 分隔线
             if idx > 0:
                 c.create_line(pad, y0, w - pad, y0, fill=SEP)
-            # 色点（右侧）
-            cx = w - pad - dot_r
+            # 第三列：context 占用 token 数（最右，右对齐，暗色）
+            ctx_str = format_tokens(s.get("ctx_tokens", 0))
+            if ctx_str:
+                c.create_text(w - pad, yc, text=ctx_str, fill=FG_DIM,
+                              font=ctx_font, anchor="e")
+            # 第二列：色点（在固定宽 ctx 列的左侧）
+            cx = w - pad - ctx_col_w - ctx_gap - dot_r
             color = DOT_COLORS.get(s["status"], FG_DIM)
             c.create_oval(cx - dot_r, yc - dot_r, cx + dot_r, yc + dot_r,
                           fill=color, outline="")

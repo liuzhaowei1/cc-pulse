@@ -134,6 +134,46 @@ def title_from_transcript(transcript_path):
     return custom, ai
 
 
+def context_tokens_from_transcript(transcript_path):
+    """当前上下文占用 token 数 = 最后一条非 sidechain 的 assistant 消息的
+    input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+    （这正是 API 每轮返回的完整输入账单，与 /context 同源；与模型窗口无关，
+    所以是 200k / 1m 都通用的绝对值）。
+
+    只读文件尾部约 1MB 倒序扫，避免整文件重扫；从中间截断的首行可能不完整，丢弃。
+    读不到/异常返回 0（Viewer 端不显示）。"""
+    if not transcript_path:
+        return 0
+    try:
+        size = os.path.getsize(transcript_path)
+        start = max(0, size - 1024 * 1024)
+        with open(transcript_path, "rb") as f:
+            f.seek(start)
+            data = f.read()
+        lines = data.split(b"\n")
+        if start > 0 and len(lines) > 1:
+            lines = lines[1:]          # 丢弃被截断的不完整首行
+        for raw in reversed(lines):
+            raw = raw.strip()
+            if not raw or b'"usage"' not in raw:
+                continue
+            try:
+                d = json.loads(raw)
+            except Exception:
+                continue
+            if d.get("isSidechain") or d.get("type") != "assistant":
+                continue
+            u = (d.get("message") or {}).get("usage") or {}
+            tot = (u.get("input_tokens", 0)
+                   + u.get("cache_creation_input_tokens", 0)
+                   + u.get("cache_read_input_tokens", 0))
+            if tot:
+                return int(tot)
+    except Exception:
+        pass
+    return 0
+
+
 def resolve_label(data):
     """label 解析优先级：CC_LABEL 环境变量 > /rename 自定义标题 > 自动标题 > cwd 目录名。"""
     env_label = os.environ.get("CC_LABEL", "").strip()
@@ -188,6 +228,7 @@ def write_status(data, status):
         "pid": find_claude_pid(),
         "updated_at": now_iso(),
         "wt_session": os.environ.get("WT_SESSION", ""),
+        "ctx_tokens": context_tokens_from_transcript(data.get("transcript_path")),
     }
     atomic_write(session_id, payload)
 

@@ -157,6 +157,15 @@ def main():
     long = v.truncate_to_width(f, "x" * 50, 70)  # 容纳约 10 字符
     check("truncate: 超宽带省略号", long.endswith("…") and len(long) < 50)
 
+    # ── format_tokens（context 占用显示）──
+    check("fmt: 0 → 空串", v.format_tokens(0) == "")
+    check("fmt: None → 空串", v.format_tokens(None) == "")
+    check("fmt: 负数 → 空串", v.format_tokens(-5) == "")
+    check("fmt: <1k 原样", v.format_tokens(999) == "999")
+    check("fmt: 1k–10k 一位小数", v.format_tokens(4647) == "4.6k")
+    check("fmt: ≥10k 取整", v.format_tokens(35100) == "35k")
+    check("fmt: 大值取整", v.format_tokens(234922) == "235k")
+
     # ── 屏外判定 ──
     check("offscreen: None 视为越界", v.is_offscreen(None, None, 260, 200, 1920, 1080))
     check("offscreen: 正常坐标不越界", not v.is_offscreen(100, 100, 260, 200, 1920, 1080))
