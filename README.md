@@ -340,12 +340,14 @@ CC Pulse/
 │   ├── 睡觉.gif                # 像素宠物：睡觉形态
 │   ├── demo-terminal.png       # 效果图：Claude Code 终端 + 桌面宠物
 │   ├── demo-states.png         # 效果图：三态状态展示
+│   ├── app.ico                 # 应用图标（橙色显示器 + 脉搏波形）
 │   └── notify.wav              # 提示音
 ├── run.bat                     # Windows 快速运行
 ├── build/
 │   ├── build.bat               # PyInstaller 打包（cmd）
 │   └── build.ps1               # PyInstaller 打包（PowerShell，带 30MB 校验）
 ├── tools/
+│   ├── make_icon.py            # 用 Pillow 生成应用图标 app.ico
 │   ├── make_pet_gif.py         # 用 Pillow 重新生成宠物 gif（仅备料时用）
 │   └── test_logic.py           # 纯逻辑 headless 单测（31 项）
 └── CC-Pulse-PRD.md             # 需求文档（v1.2）
@@ -365,6 +367,9 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 
 产物：`dist\CCPulse.exe`。纯标准库 + 像素宠物引擎，PyInstaller onefile 通常 **8–12MB**，
 满足 ≤30MB；如需更小可装 UPX 再压。双击 exe 即用，无需 Python 环境。
+
+> exe 图标取自 `assets/app.ico`（橙色显示器 + 脉搏波形，呼应 “Pulse”）。打包脚本已带
+> `--icon assets/app.ico`；想换图标就改 `tools/make_icon.py` 重新生成 `app.ico` 再打包。
 
 ---
 
