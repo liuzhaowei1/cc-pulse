@@ -133,19 +133,20 @@ cp hooks/cc-pulse-report.py ~/.claude/hooks/
 Copy-Item hooks\cc-pulse-report.py "$env:USERPROFILE\.claude\hooks\"
 ```
 
-#### 2.3 修改 hook 脚本中的路径
+#### 2.3 state 目录（一般无需配置）
 
-打开 `cc-pulse-report.py`，修改第 22 行的 `STATE_DIR`：
+hook 脚本会自动找到 Viewer 读取的 `%LOCALAPPDATA%\cc-pulse\state`，查找顺序：
 
-```python
-# Linux/WSL 用户
-STATE_DIR = "/mnt/c/Users/你的Windows用户名/AppData/Local/cc-pulse/state"
+1. 环境变量 `CC_PULSE_STATE_DIR`（手动指定，最高优先）
+2. 环境变量 `LOCALAPPDATA`（Windows 原生运行时）
+3. WSL：`/mnt/c/Users/*/AppData/Local/cc-pulse` 中已存在的那个（**先启动一次 Viewer** 就会创建）
+4. WSL：调用 `cmd.exe` 查询 `%LOCALAPPDATA%`
+5. 都失败时回退 `~/.cc-pulse/state`
 
-# Windows 用户（直接运行 Python，不是 WSL）
-STATE_DIR = "/mnt/c/Users/你的Windows用户名/AppData/Local/cc-pulse/state"
+第 3/4 步的结果缓存在 `~/.cache/cc-pulse/state_dir`。自动识别不对时，手动指定：
 
-# macOS 用户（如果用虚拟机运行 Windows）
-STATE_DIR = "/mnt/c/Users/你的Windows用户名/AppData/Local/cc-pulse/state"
+```bash
+export CC_PULSE_STATE_DIR="/mnt/c/Users/你的Windows用户名/AppData/Local/cc-pulse/state"
 ```
 
 **如何查看你的 Windows 用户名？**
@@ -308,7 +309,7 @@ ls -la "/mnt/c/Users/你的用户名/AppData/Local/cc-pulse/state/"
 
 - 🟢 `done` — 空闲/就绪，等待用户输入
 - 🟡 `busy` — 正在执行任务
-- 🔴 `needs_you` — 需要用户操作（如权限确认）
+- 🔴 `needs_you` — 需要用户操作：按 Notification 的 `notification_type` 判定（`permission_prompt` 权限确认、`elicitation_dialog`/`elicitation_url_dialog` 提问、`agent_needs_input`）；回答提问后自动转回 🟡。`idle_prompt` 等闲置提醒不会变红
 
 ### label 解析优先级
 
@@ -389,11 +390,11 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 | 功能 | 实现位置 | 行为 |
 |------|----------|------|
 | F2 主窗体 | `overrideredirect`+`-topmost`+`-alpha`+ 标题栏拖拽 | 无边框置顶半透明可拖拽 |
-| F2 列表 | `_tick`/`_render_list`（每 800ms 轮询） | 按 `updated_at` 降序，label + 三态色点，默认 3 行可滚动 |
+| F2 列表 | `_tick`/`_render_list`（每 200ms 轮询） | 按 `updated_at` 降序，label + 三态色点，默认 3 行可滚动 |
 | F3 宠物 | `pixelpet.py`/`_render_pet`/`_animate` | 无会话→**程序化像素宠物**（纯代码逐帧，无图片）：6 形象（发呆/思考/敲代码/庆祝/星光/睡觉）每 10–20s 随机切换；1.5s 防抖 |
 | F4 标题栏 | `toggle_pin`/`toggle_settings`/`close` | 📌 置顶切换 / ⚙️ 设置 / ✕ 退出 |
 | F5 设置 | `_open_settings` + `_save_config` | 透明度(20–100)/字号偏移(-5~+5)/宽/高/红点提示音开关，即时原子持久化 |
-| F6 清理 | `_reap`/`query_alive_pids`/`reaper_decide`（每 5s） | 经 `wsl.exe` 批量 `kill -0` 判活删死会话；pid=0 走 30min 超时；wsl 不可用退化为超时 |
+| F6 清理 | `_reap_loop`/`query_alive_pids`/`reaper_decide`（后台线程，每 5s） | 经 `wsl.exe` 批量 `kill -0` 判活删死会话（不阻塞界面）；pid=0 走 30min 超时；wsl 不可用退化为超时 |
 
 ---
 
@@ -443,7 +444,7 @@ shell:startup
 1. ✅ F1 hook 是否已配置（`~/.claude/settings.json`）
 2. ✅ State 目录是否存在：`%LOCALAPPDATA%\cc-pulse\state\`
 3. ✅ 打开一个 Claude Code 终端，发一条消息，观察 state 目录是否生成 JSON 文件
-4. ✅ hook 脚本中的路径是否正确（`STATE_DIR` 变量）
+4. ✅ hook 找到的 state 目录是否正确（`cat ~/.cache/cc-pulse/state_dir`；不对就设 `CC_PULSE_STATE_DIR`）
 5. ✅ Python 命令是否正确（`python` vs `python3`）
 
 **调试方法：**
@@ -460,7 +461,7 @@ cat /mnt/c/Users/你的用户名/AppData/Local/cc-pulse/state/test123.json
 
 ### Q: 状态切换有延迟？
 
-**正常现象。** 总延迟 = Viewer 轮询间隔（800ms）+ hook 触发延迟（~1-2s）= 1-3s。
+**正常现象。** 总延迟 = Viewer 轮询间隔（200ms）+ hook 触发延迟（~1-2s）= 1-3s。
 
 如果延迟过长（>5s），检查：
 1. hook 脚本是否正常运行

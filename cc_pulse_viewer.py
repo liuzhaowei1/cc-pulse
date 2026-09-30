@@ -16,17 +16,17 @@ CC Pulse — Windows 悬浮状态栏 (Viewer)  F2–F6
   F3 待机宠物（无会话时打盹小 Claude，1.5s 防抖）
   F4 标题栏：📌 置顶切换 / ⚙️ 设置 / ✕ 关闭
   F5 设置：透明度/宽/高 + 即时原子持久化 config.json
-  F6 残留会话清理：每 5s 经 wsl.exe 对各 pid 做 kill -0，死进程文件删除；pid=0 走超时
+  F6 残留会话清理：后台线程每 5s 经 wsl.exe 对各 pid 做 kill -0，死进程文件删除；pid=0 走超时
 """
 
 import glob
 import json
 import os
-import pathlib
 import queue
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -128,15 +128,11 @@ def base_dir():
     la = os.environ.get("LOCALAPPDATA")
     if la:
         return os.path.join(la, APP_NAME)
-    # 开发/自测回退：动态获取 WSL 路径
-    users_dir = pathlib.Path("/mnt/c/Users")
-    if users_dir.exists():
-        system_users = {"Default", "Public", "All Users", "Default User", "desktop.ini"}
-        for user_dir in users_dir.iterdir():
-            if user_dir.is_dir() and user_dir.name not in system_users:
-                return f"/mnt/c/Users/{user_dir.name}/AppData/Local/cc-pulse"
-    # 最终回退
-    return os.path.join(pathlib.Path.home(), ".cc-pulse")
+    # 开发/自测回退（WSL 下直接跑）：找 Viewer 已创建过的 cc-pulse 目录，与 F1 reporter 同一规则
+    found = glob.glob("/mnt/c/Users/*/AppData/Local/" + APP_NAME)
+    if found:
+        return max(found, key=os.path.getmtime)
+    return os.path.join(os.path.expanduser("~"), ".cc-pulse")
 
 
 def state_dir():
@@ -329,9 +325,12 @@ def query_alive_pids(pids, timeout=4.0):
     if IS_WINDOWS:
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
+        # wsl.exe 自身报错（如实例未就绪）输出 UTF-16，按本地码页解码会失败，
+        # 读线程异常后 stdout 为 None —— 用 errors="replace" 并兜底空串
         r = subprocess.run(
             ["wsl.exe", "bash", "-c", inner],
-            capture_output=True, text=True, timeout=timeout, **kwargs
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout, **kwargs
         )
     except Exception:
         return None
@@ -339,7 +338,7 @@ def query_alive_pids(pids, timeout=4.0):
     # 探测 pid 若已死，"kill -0 && echo" 短路会让整体退出码为 1，把这份本来正确的
     # 判活结果整个误丢成 None（退回超时判废）。改以 __WSLOK__ 哨兵确认脚本确实跑过；
     # 各 pid 存活与否由它自己有没有 echo 出来表达，与整体退出码无关。
-    lines = [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    lines = [ln.strip() for ln in (r.stdout or "").splitlines() if ln.strip()]
     if "__WSLOK__" not in lines:
         return None
     alive = set()
@@ -447,6 +446,7 @@ class CCPulseViewer:
         self._last_pet_sig = None    # 宠物渲染签名
         self._prev_status = {}       # session_id → 上一轮 status，用于红点边沿检测
         self._last_alert_t = 0.0     # 上次播放提示音的时刻（节流）
+        self._stop_evt = threading.Event()   # 通知后台 reaper 线程退出
 
         # 系统托盘（仅 Windows）。托盘线程经队列把动作回交主线程消费（tkinter 非线程安全）。
         self._tray_q = queue.Queue()
@@ -471,7 +471,8 @@ class CCPulseViewer:
         self.root.bind("<Configure>", self._on_configure, add="+")
         # 启动各周期循环
         self.root.after(50, self._tick)
-        self.root.after(REAP_MS, self._reap)
+        # reaper 走后台线程：wsl.exe 每次 ~150ms、最坏 4s 超时，放主线程会卡动画和拖拽
+        threading.Thread(target=self._reap_loop, name="reaper", daemon=True).start()
         self.root.after(ANIM_MS, self._animate)
         self.root.after(150, self._poll_tray)    # 消费托盘线程的动作
 
@@ -728,7 +729,7 @@ class CCPulseViewer:
             color = DOT_COLORS.get(s["status"], FG_DIM)
             c.create_oval(cx - dot_r, yc - dot_r, cx + dot_r, yc + dot_r,
                           fill=color, outline="")
-            # 标签（左侧，超宽省略号）
+            # 第一列：标签（左侧，超宽省略号）
             max_text = (cx - dot_r - 6) - pad
             text = truncate_to_width(font, s["label"], max(10, max_text))
             c.create_text(pad, yc, text=text, fill=FG, font=font, anchor="w")
@@ -776,8 +777,13 @@ class CCPulseViewer:
             self._render_pet()
         self.root.after(ANIM_MS, self._animate)
 
-    # ── 残留清理 (F6) ─────────────────────────────────────────────────────────
-    def _reap(self):
+    # ── 残留清理 (F6)：后台线程，只碰文件与子进程，不碰 tk ─────────────────────
+    def _reap_loop(self):
+        while not self._stop_evt.wait(REAP_MS / 1000.0):
+            self._reap_once()
+
+    def _reap_once(self):
+        # 删掉的文件由主线程下一轮 _tick 重读时自然反映（渲染签名会变），无需通知主线程
         try:
             states = read_states(state_dir())
             if states:
@@ -794,12 +800,8 @@ class CCPulseViewer:
                             except OSError:
                                 pass
                             break
-                if dead:
-                    self._last_sig = None
         except Exception as e:
             log("reap error: %r" % e)
-        finally:
-            self.root.after(REAP_MS, self._reap)
 
     # ── 标题栏动作 ────────────────────────────────────────────────────────────
     def toggle_pin(self):
@@ -812,6 +814,7 @@ class CCPulseViewer:
         self.cfg["pos_x"] = self.root.winfo_x()
         self.cfg["pos_y"] = self.root.winfo_y()
         self._save_config()
+        self._stop_evt.set()
         if self.tray is not None:
             try:
                 self.tray.stop()
