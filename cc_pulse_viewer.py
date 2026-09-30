@@ -15,7 +15,7 @@ CC Pulse — Windows 悬浮状态栏 (Viewer)  F2–F6
   F2 置顶/半透明/可拖拽主窗体 + 会话列表（每≤1s 轮询，按 updated_at 降序，三态色点）
   F3 待机宠物（无会话时打盹小 Claude，1.5s 防抖）
   F4 标题栏：📌 置顶切换 / ⚙️ 设置 / ✕ 关闭
-  F5 设置：透明度/宽/高 + 即时原子持久化 config.json
+  F5 设置：透明度/宽/高/深浅主题 + 即时原子持久化 config.json
   F6 残留会话清理：后台线程每 5s 经 wsl.exe 对各 pid 做 kill -0，死进程文件删除；pid=0 走超时
 """
 
@@ -45,7 +45,7 @@ STATUS_DONE = "done"
 STATUS_BUSY = "busy"
 STATUS_NEEDS_YOU = "needs_you"
 
-# 三态色点（PRD F2-3）
+# 三态色点（PRD F2-3）。深色主题的色值，也用作合法 status 的白名单
 DOT_COLORS = {
     STATUS_NEEDS_YOU: "#E5484D",   # 🔴 等你操作（最扎眼）
     STATUS_BUSY: "#F5C518",        # 🟡 忙
@@ -54,13 +54,33 @@ DOT_COLORS = {
 # 排序时让红 > 黄 > 绿在同一 updated_at 下更靠前（次级权重）
 STATUS_RANK = {STATUS_NEEDS_YOU: 0, STATUS_BUSY: 1, STATUS_DONE: 2}
 
-# 视觉
-BG = "#1E1E1E"
-TITLE_BG = "#2A2A2A"
-FG = "#FFFFFF"
-FG_DIM = "#9A9A9A"
-SEP = "#383838"
-ACCENT = "#46C28E"
+# 视觉：两套主题调色板，config["theme"] 选其一
+THEMES = {
+    "dark": {
+        "bg": "#1E1E1E", "title_bg": "#2A2A2A", "fg": "#FFFFFF", "fg_dim": "#9A9A9A",
+        "sep": "#383838", "accent": "#46C28E", "thumb": "#555555",
+        "tip_bg": "#000000", "tip_fg": "#EEEEEE",
+        "section": "#525252", "hint": "#3A3A3A", "trough": "#2E2E2E",
+        "input_bg": "#272727", "btn_bg": "#333333",
+        "border": None,              # 深色面板与桌面反差足够，不描边
+        "dots": dict(DOT_COLORS),
+        "pet_remap": {},
+    },
+    "light": {
+        "bg": "#F7F7F5", "title_bg": "#EAEAE7", "fg": "#1F1F1F", "fg_dim": "#6E6E6E",
+        "sep": "#DDDDD9", "accent": "#1F9D6B", "thumb": "#BDBDB8",
+        "tip_bg": "#333333", "tip_fg": "#F5F5F5",
+        "section": "#9A9A96", "hint": "#B8B8B3", "trough": "#DCDCD8",
+        "input_bg": "#FFFFFF", "btn_bg": "#E2E2DE",
+        "border": "#C4C4BF",         # 浅色面板叠在白色窗口上会没有边界，描 1px 边
+        # 白底上黄色太浅、绿色偏亮，各压暗一档；红色不变
+        "dots": {STATUS_NEEDS_YOU: "#E5484D", STATUS_BUSY: "#E0A800",
+                 STATUS_DONE: "#2FA876"},
+        # 宠物里为深色背景设计的浅色像素（气泡/z/星光）在白底上看不清，渲染时替换
+        "pet_remap": {pixelpet.WHITE: "#CFC7BE", pixelpet.ZCOL: "#6F95BA",
+                      pixelpet.GOLD: "#E3A92A"},
+    },
+}
 
 TITLEBAR_H = 26
 GRIP_H = 8                  # 底边高度调节热区厚度（px）：与背景同色不可见，靠近即变拉伸光标
@@ -87,6 +107,7 @@ CONFIG_DEFAULTS = {
     "always_on_top": True,
     "font_level": 0,           # 字号档位：以默认字号为 0，-5..+5（每档 ±1px）
     "sound_enabled": True,     # 红点亮起时播放提示音（assets/notify.wav）
+    "theme": "dark",           # "dark" / "light"
 }
 CONFIG_RANGES = {
     "opacity": (20, 100),
@@ -110,6 +131,13 @@ ALERT_THROTTLE_S = 1.0     # 红点提示音最短重复间隔，避免多会话
 # 资源路径解析（区别于 base_dir：assets 随脚本/exe 走，不在 %LOCALAPPDATA%）
 # 冻结态（PyInstaller onefile）→ sys._MEIPASS/assets；开发态 → 脚本同级 assets
 # ────────────────────────────────────────────────────────────────────────────
+
+def apply_border(win, theme):
+    """按主题给无边框窗口描 1px 边（border 为 None 则不描）。"""
+    b = theme["border"]
+    win.configure(highlightthickness=1 if b else 0,
+                  highlightbackground=b or theme["bg"], highlightcolor=b or theme["bg"])
+
 
 def asset_path(name):
     root = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
@@ -257,6 +285,8 @@ def clamp_config(cfg):
             out[k] = CONFIG_DEFAULTS[k]
     out["always_on_top"] = bool(out["always_on_top"])
     out["sound_enabled"] = bool(out["sound_enabled"])
+    if out["theme"] not in THEMES:
+        out["theme"] = CONFIG_DEFAULTS["theme"]
     for k in ("pos_x", "pos_y"):
         if out[k] is not None:
             try:
@@ -391,9 +421,10 @@ def truncate_to_width(font, text, max_px):
 # ────────────────────────────────────────────────────────────────────────────
 
 class Tooltip:
-    def __init__(self, widget, text):
+    def __init__(self, widget, text, theme):
         self.widget = widget
         self.text = text
+        self.theme = theme           # 无参可调用，返回当前调色板（显示时才取，跟随主题切换）
         self.tip = None
         widget.bind("<Enter>", self._show, add="+")
         widget.bind("<Leave>", self._hide, add="+")
@@ -408,7 +439,8 @@ class Tooltip:
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry("+%d+%d" % (x, y))
         self.tip.attributes("-topmost", True)
-        tk.Label(self.tip, text=self.text, bg="#000000", fg="#EEEEEE",
+        t = self.theme()
+        tk.Label(self.tip, text=self.text, bg=t["tip_bg"], fg=t["tip_fg"],
                  font=("Segoe UI", 8), padx=6, pady=2).pack()
 
     def _hide(self, _e=None):
@@ -428,7 +460,9 @@ class CCPulseViewer:
 
         self.root = tk.Tk()
         self.root.title("CC Pulse")
-        self.root.configure(bg=BG)
+        self.T = THEMES[self.cfg["theme"]]    # 当前调色板
+        self.root.configure(bg=self.T["bg"])
+        apply_border(self.root, self.T)
         self.root.overrideredirect(True)              # 无边框
         self.root.attributes("-topmost", self.cfg["always_on_top"])
         self.root.attributes("-alpha", self.cfg["opacity"] / 100.0)
@@ -464,9 +498,7 @@ class CCPulseViewer:
                 log("tray init failed: %r" % e)
                 self.tray = None
 
-        self._build_titlebar()
-        self._build_resize_grip()      # 底边拖拽热区（须在主体之前 pack，占住底部）
-        self._build_body()
+        self._build_ui()
 
         self.root.bind("<Configure>", self._on_configure, add="+")
         # 启动各周期循环
@@ -493,9 +525,32 @@ class CCPulseViewer:
         self.root.geometry("%dx%d+%d+%d" % (w, h, x, y))
         self._last_sig = None  # 强制重绘
 
+    def _build_ui(self):
+        self._build_titlebar()
+        self._build_resize_grip()      # 底边拖拽热区（须在主体之前 pack，占住底部）
+        self._build_body()
+
+    # ── 主题切换：整体重建主面板控件（颜色散在各控件上，逐个改色不如重建可靠）──────
+    def _apply_theme(self):
+        self.T = THEMES[self.cfg["theme"]]
+        self.root.configure(bg=self.T["bg"])
+        apply_border(self.root, self.T)
+        for w in (self.titlebar, self.resize_grip, self.canvas):
+            w.destroy()
+        self._build_ui()
+        self._last_sig = None
+        self._last_pet_sig = None
+        # 设置面板开着的话按新配色重开，留在原位置
+        if self.settings_win is not None:
+            pos = (self.settings_win.winfo_x(), self.settings_win.winfo_y())
+            self._close_settings()
+            self._open_settings()
+            self.settings_win.geometry("+%d+%d" % pos)
+
     # ── 标题栏 (F4) ──────────────────────────────────────────────────────────
     def _build_titlebar(self):
-        bar = tk.Frame(self.root, bg=TITLE_BG, height=TITLEBAR_H)
+        T = self.T
+        bar = tk.Frame(self.root, bg=T["title_bg"], height=TITLEBAR_H)
         bar.pack(side="top", fill="x")
         bar.pack_propagate(False)
         self.titlebar = bar
@@ -516,28 +571,29 @@ class CCPulseViewer:
                 w.bind("<ButtonRelease-1>", self._drag_end, add="+")
 
     def _titlebar_btn(self, parent, glyph, cmd, tip):
-        lbl = tk.Label(parent, text=glyph, bg=TITLE_BG, fg=FG_DIM,
+        lbl = tk.Label(parent, text=glyph, bg=self.T["title_bg"], fg=self.T["fg_dim"],
                        font=("Segoe UI Emoji", 10), padx=6, cursor="hand2")
         lbl.pack(side="right")
         lbl.bind("<Button-1>", lambda e: cmd())
-        lbl.bind("<Enter>", lambda e: lbl.config(fg=FG))
+        lbl.bind("<Enter>", lambda e: lbl.config(fg=self.T["fg"]))
         lbl.bind("<Leave>", lambda e: self._restore_btn_color(lbl))
-        Tooltip(lbl, tip)
+        Tooltip(lbl, tip, lambda: self.T)
         return lbl
 
     def _restore_btn_color(self, lbl):
         if lbl is self.btn_pin and self.cfg["always_on_top"]:
-            lbl.config(fg=ACCENT)
+            lbl.config(fg=self.T["accent"])
         else:
-            lbl.config(fg=FG_DIM)
+            lbl.config(fg=self.T["fg_dim"])
 
     def _refresh_pin(self):
         # 置顶 ON → 高亮强调色；OFF → 暗色
-        self.btn_pin.config(fg=ACCENT if self.cfg["always_on_top"] else FG_DIM)
+        self.btn_pin.config(
+            fg=self.T["accent"] if self.cfg["always_on_top"] else self.T["fg_dim"])
 
     # ── 主体 (Canvas: 列表 / 宠物共用) ────────────────────────────────────────
     def _build_body(self):
-        self.canvas = tk.Canvas(self.root, bg=BG, highlightthickness=0, bd=0)
+        self.canvas = tk.Canvas(self.root, bg=self.T["bg"], highlightthickness=0, bd=0)
         self.canvas.pack(side="top", fill="both", expand=True)
         # 列表滚动
         self.canvas.bind("<MouseWheel>", self._on_wheel, add="+")       # Windows
@@ -552,7 +608,7 @@ class CCPulseViewer:
     def _build_resize_grip(self):
         # 与背景同色的薄条铺在最底部：平时看不见，鼠标靠近即显示上下拉伸光标，
         # 按住上下拖动直接改高度。手动在设置里填「高(px)」的方式不受影响。
-        grip = tk.Frame(self.root, bg=BG, height=GRIP_H,
+        grip = tk.Frame(self.root, bg=self.T["bg"], height=GRIP_H,
                         cursor="sb_v_double_arrow")
         grip.pack(side="bottom", fill="x")
         grip.pack_propagate(False)
@@ -611,8 +667,14 @@ class CCPulseViewer:
         self._last_sig = None  # 下一轮 _tick 会带着新 scroll_off 重绘
 
     # ── 度量 ────────────────────────────────────────────────────────────────
+    def _border_px(self):
+        return 2 if self.T["border"] else 0     # 两侧各 1px 描边
+
+    def _body_w(self):
+        return self.root.winfo_width() - self._border_px()
+
     def _body_h(self):
-        return max(40, self.root.winfo_height() - TITLEBAR_H - GRIP_H)
+        return max(40, self.root.winfo_height() - TITLEBAR_H - GRIP_H - self._border_px())
 
     def _row_h(self):
         # 固定行高：拉高面板时不放大每行，而是多容纳几行（放不下走滚动）。
@@ -684,7 +746,7 @@ class CCPulseViewer:
     def _render_list(self, states):
         row_h = self._row_h()
         fsize = self._font_size()
-        w = self.root.winfo_width()
+        w = self._body_w()
         body_h = self._body_h()
         total_h = len(states) * row_h
 
@@ -700,6 +762,7 @@ class CCPulseViewer:
             return
         self._last_sig = sig
 
+        T = self.T
         c = self.canvas
         c.delete("all")
         font = tkfont.Font(family="Microsoft YaHei UI", size=fsize)
@@ -718,21 +781,21 @@ class CCPulseViewer:
                 continue  # 视口外不画
             # 分隔线
             if idx > 0:
-                c.create_line(pad, y0, w - pad, y0, fill=SEP)
+                c.create_line(pad, y0, w - pad, y0, fill=T["sep"])
             # 第三列：context 占用 token 数（最右，右对齐，暗色）
             ctx_str = format_tokens(s.get("ctx_tokens", 0))
             if ctx_str:
-                c.create_text(w - pad, yc, text=ctx_str, fill=FG_DIM,
+                c.create_text(w - pad, yc, text=ctx_str, fill=T["fg_dim"],
                               font=ctx_font, anchor="e")
             # 第二列：色点（在固定宽 ctx 列的左侧）
             cx = w - pad - ctx_col_w - ctx_gap - dot_r
-            color = DOT_COLORS.get(s["status"], FG_DIM)
+            color = T["dots"].get(s["status"], T["fg_dim"])
             c.create_oval(cx - dot_r, yc - dot_r, cx + dot_r, yc + dot_r,
                           fill=color, outline="")
             # 第一列：标签（左侧，超宽省略号）
             max_text = (cx - dot_r - 6) - pad
             text = truncate_to_width(font, s["label"], max(10, max_text))
-            c.create_text(pad, yc, text=text, fill=FG, font=font, anchor="w")
+            c.create_text(pad, yc, text=text, fill=T["fg"], font=font, anchor="w")
 
         # 溢出滚动指示（细 thumb）
         if total_h > body_h:
@@ -741,12 +804,12 @@ class CCPulseViewer:
             track = body_h - thumb_h
             ty = (self.scroll_off / max_off) * track if max_off else 0
             c.create_rectangle(w - 3, ty, w - 1, ty + thumb_h,
-                               fill="#555555", outline="")
+                               fill=T["thumb"], outline="")
 
     # ── 宠物渲染 (F3)：程序化像素，按逻辑网格缩放居中用方块画出 ─────────────────
     def _render_pet(self):
         _, pixels = self.pixel_pet.render()
-        w = self.root.winfo_width()
+        w = self._body_w()
         body_h = self._body_h()
 
         # 内容/尺寸无变化则跳过重绘
@@ -765,11 +828,12 @@ class CCPulseViewer:
         draw_h = pixelpet.LOGICAL_H * scale
         ox = (w - draw_w) // 2
         oy = (body_h - draw_h) // 2
+        remap = self.T["pet_remap"]
         for (gx, gy, col) in pixels:
             x0 = ox + gx * scale
             y0 = oy + gy * scale
             c.create_rectangle(x0, y0, x0 + scale, y0 + scale,
-                               fill=col, outline="")
+                               fill=remap.get(col, col), outline="")
 
     def _animate(self):
         if self.in_pet_mode:
@@ -865,20 +929,23 @@ class CCPulseViewer:
         self._open_settings()
 
     def _open_settings(self):
+        T = self.T
+        BG, FG, FG_DIM, ACCENT = T["bg"], T["fg"], T["fg_dim"], T["accent"]
         win = tk.Toplevel(self.root)
         self.settings_win = win
         win.configure(bg=BG)
+        apply_border(win, T)
         win.overrideredirect(True)          # 无边框，与主面板风格一致
         win.attributes("-topmost", True)
         win.resizable(False, False)
 
         # ── 自定义标题栏（含拖拽 + 关闭）────────────────────────────────────────
-        hdr = tk.Frame(win, bg=TITLE_BG, height=TITLEBAR_H)
+        hdr = tk.Frame(win, bg=T["title_bg"], height=TITLEBAR_H)
         hdr.pack(fill="x")
         hdr.pack_propagate(False)
-        tk.Label(hdr, text="⚙  设置", bg=TITLE_BG, fg=FG,
+        tk.Label(hdr, text="⚙  设置", bg=T["title_bg"], fg=FG,
                  font=("Microsoft YaHei UI", 9, "bold"), padx=10).pack(side="left")
-        btn_x = tk.Label(hdr, text="✕", bg=TITLE_BG, fg=FG_DIM,
+        btn_x = tk.Label(hdr, text="✕", bg=T["title_bg"], fg=FG_DIM,
                          font=("Segoe UI", 10), padx=8, cursor="hand2")
         btn_x.pack(side="right")
         btn_x.bind("<Button-1>", lambda e: self._close_settings())
@@ -901,10 +968,10 @@ class CCPulseViewer:
         body.pack(fill="both", expand=True)
 
         def _mk_sep():
-            tk.Frame(body, bg=SEP, height=1).pack(fill="x", padx=14, pady=(0, 4))
+            tk.Frame(body, bg=T["sep"], height=1).pack(fill="x", padx=14, pady=(0, 4))
 
         def _mk_section(text):
-            tk.Label(body, text=text, bg=BG, fg="#525252",
+            tk.Label(body, text=text, bg=BG, fg=T["section"],
                      font=("Microsoft YaHei UI", 7), anchor="w",
                      padx=14).pack(fill="x", pady=(8, 2))
 
@@ -918,7 +985,7 @@ class CCPulseViewer:
                      width=4, anchor="e").pack(side="right")
             tk.Scale(body, from_=lo, to=hi, orient="horizontal",
                      variable=var, showvalue=False, bg=BG, fg=FG,
-                     troughcolor="#2E2E2E", highlightthickness=0,
+                     troughcolor=T["trough"], highlightthickness=0,
                      activebackground=ACCENT, command=cmd).pack(
                          fill="x", padx=14, pady=(2, 4))
 
@@ -928,10 +995,10 @@ class CCPulseViewer:
             tk.Label(row, text=label, bg=BG, fg=FG,
                      font=("Microsoft YaHei UI", 9)).pack(side="left")
             sp = tk.Spinbox(row, from_=lo, to=hi, textvariable=var, width=7,
-                            command=self._on_size, bg="#272727", fg=FG,
-                            buttonbackground="#333333", relief="flat",
+                            command=self._on_size, bg=T["input_bg"], fg=FG,
+                            buttonbackground=T["btn_bg"], relief="flat",
                             highlightthickness=1, highlightcolor=ACCENT,
-                            highlightbackground=SEP, insertbackground=FG)
+                            highlightbackground=T["sep"], insertbackground=FG)
             sp.pack(side="right")
             sp.bind("<Return>", lambda e: self._on_size())
             sp.bind("<FocusOut>", lambda e: self._on_size())
@@ -942,7 +1009,8 @@ class CCPulseViewer:
             tk.Label(row, text=label, bg=BG, fg=FG,
                      font=("Microsoft YaHei UI", 9), anchor="w").pack(side="left")
             tk.Checkbutton(row, variable=var, command=cmd, bg=BG, fg=FG,
-                           activebackground=BG, selectcolor="#272727",
+                           activebackground=BG, activeforeground=FG,
+                           selectcolor=T["input_bg"],
                            highlightthickness=0, bd=0, takefocus=0).pack(side="right")
 
         _mk_section("显 示")
@@ -952,6 +1020,9 @@ class CCPulseViewer:
 
         self.var_font = tk.IntVar(value=self.cfg["font_level"])
         _mk_slider("字号偏移", self.var_font, *CONFIG_RANGES["font_level"], self._on_font)
+
+        self.var_light = tk.BooleanVar(value=self.cfg["theme"] == "light")
+        _mk_check("浅色主题", self.var_light, self._on_theme)
 
         _mk_section("尺 寸")
         _mk_sep()
@@ -965,7 +1036,7 @@ class CCPulseViewer:
         self.var_sound = tk.BooleanVar(value=self.cfg["sound_enabled"])
         _mk_check("红点亮起播放提示音", self.var_sound, self._on_sound)
 
-        tk.Label(body, text="改动即时生效", bg=BG, fg="#3A3A3A",
+        tk.Label(body, text="改动即时生效", bg=BG, fg=T["hint"],
                  font=("Microsoft YaHei UI", 7)).pack(pady=(6, 10))
 
         # ── 定位：贴紧主面板上方（不够则退到下方）────────────────────────────────
@@ -985,6 +1056,12 @@ class CCPulseViewer:
         if self.settings_win:
             self.settings_win.destroy()
             self.settings_win = None
+
+    def _on_theme(self, _v=None):
+        self.cfg["theme"] = "light" if self.var_light.get() else "dark"
+        self._save_config()
+        # 重建会销毁设置面板（含正在回调的这个勾选框），推迟到回调返回后再做
+        self.root.after_idle(self._apply_theme)
 
     def _on_sound(self, _v=None):
         self.cfg["sound_enabled"] = bool(self.var_sound.get())

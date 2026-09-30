@@ -112,6 +112,15 @@ def main():
     fl2 = v.clamp_config({"font_level": -99})
     check("config: font_level 夹到 +5", fl["font_level"] == 5)
     check("config: font_level 夹到 -5", fl2["font_level"] == -5)
+    check("config: 默认 theme=dark", cfg["theme"] == "dark")
+    check("config: theme=light 保留", v.clamp_config({"theme": "light"})["theme"] == "light")
+    check("config: 非法 theme → dark", v.clamp_config({"theme": "neon"})["theme"] == "dark")
+
+    # ── 主题调色板：两套键一致，色点覆盖三态 ──
+    keys = set(v.THEMES["dark"])
+    check("theme: 两套调色板键一致", all(set(t) == keys for t in v.THEMES.values()))
+    check("theme: 色点覆盖三态", all(set(t["dots"]) == set(v.DOT_COLORS)
+                                   for t in v.THEMES.values()))
 
     badcfg = os.path.join(d, "bad_config.json")
     with open(badcfg, "w") as f:

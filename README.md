@@ -56,6 +56,7 @@
 - **高度可调** — 列表行数随面板高度自适应：拖窗口**底边**即可调高（也可在设置里填高度），同开多个会话时一屏多看几条
 - **最小化到托盘** — 收进系统托盘常驻（像微信，始终在托盘）：左键唤起主面板、右键菜单「显示 / 退出」；托盘图标由像素「睡觉」宠物经 `ctypes` 调 `Shell_NotifyIcon` 程序化生成，零第三方依赖，仅 Windows 生效（其他平台自动 no-op）
 - **声音提醒** — 任意会话转入 🔴「等你操作」的那一刻播放提示音（`assets/notify.wav`），可在设置里「红点亮起播放提示音」开关；仅 Windows 生效，WSL/其他平台自动静默降级；换音效直接覆盖 `assets/notify.wav`（须为 WAV）即可
+- **深浅主题** — 设置面板勾选「浅色主题」即时切换深色/浅色，写入 `config.json`（`"theme": "dark" | "light"`）重启保留；浅色主题带 1px 描边，色点与宠物配色针对白底调深
 - **像素宠物** — 无会话时显示 6 种可爱形象，随机切换
 - **纯标准库** — 仅依赖 tkinter + Python 标准库，无第三方依赖
 - **轻量打包** — 单 exe 仅 8-12MB，满足 ≤30MB 硬约束
@@ -393,7 +394,7 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 | F2 列表 | `_tick`/`_render_list`（每 200ms 轮询） | 按 `updated_at` 降序，label + 三态色点，默认 3 行可滚动 |
 | F3 宠物 | `pixelpet.py`/`_render_pet`/`_animate` | 无会话→**程序化像素宠物**（纯代码逐帧，无图片）：6 形象（发呆/思考/敲代码/庆祝/星光/睡觉）每 10–20s 随机切换；1.5s 防抖 |
 | F4 标题栏 | `toggle_pin`/`toggle_settings`/`close` | 📌 置顶切换 / ⚙️ 设置 / ✕ 退出 |
-| F5 设置 | `_open_settings` + `_save_config` | 透明度(20–100)/字号偏移(-5~+5)/宽/高/红点提示音开关，即时原子持久化 |
+| F5 设置 | `_open_settings` + `_save_config` | 透明度(20–100)/字号偏移(-5~+5)/浅色主题/宽/高/红点提示音开关，即时原子持久化 |
 | F6 清理 | `_reap_loop`/`query_alive_pids`/`reaper_decide`（后台线程，每 5s） | 经 `wsl.exe` 批量 `kill -0` 判活删死会话（不阻塞界面）；pid=0 走 30min 超时；wsl 不可用退化为超时 |
 
 ---
