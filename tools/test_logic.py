@@ -122,6 +122,32 @@ def main():
     check("theme: 色点覆盖三态", all(set(t["dots"]) == set(v.DOT_COLORS)
                                    for t in v.THEMES.values()))
 
+    # ── 额度行：格式 / 阈值 / 过期 / 缺失 ──
+    nowt = 1_000_000.0
+    U = {"five_hour": {"used_percentage": 31.4, "resets_at": nowt + 3600},
+         "seven_day": {"used_percentage": 7, "resets_at": nowt + 86400}}
+    segs = v.usage_segments(U, nowt)
+    hhmm = v.datetime.fromtimestamp(nowt + 3600).strftime("%H:%M")
+    check("usage: 文本为 31% · HH:MM · 7%",
+          "".join(t for t, _ in segs) == "31%% · %s · 7%%" % hhmm)
+    lv = lambda p: v.usage_segments(
+        {"five_hour": {"used_percentage": p, "resets_at": nowt + 1}}, nowt)[0][1]
+    check("usage: 59 normal / 60 warn / 85 crit",
+          (lv(59), lv(60), lv(85)) == ("normal", "warn", "crit"))
+    exp5 = dict(U, five_hour={"used_percentage": 90, "resets_at": nowt - 1})
+    check("usage: 5h 过期 → -- · -- · 7%",
+          "".join(t for t, _ in v.usage_segments(exp5, nowt)) == "-- · -- · 7%")
+    check("usage: 两窗口都过期 → 隐藏",
+          v.usage_segments({"five_hour": {"used_percentage": 1, "resets_at": nowt - 1}},
+                           nowt) is None)
+    check("usage: 无数据/损坏 → 隐藏", v.usage_segments(None, nowt) is None
+          and v.usage_segments({"five_hour": {"x": 1}}, nowt) is None)
+    upath = os.path.join(d, "usage.json")
+    with open(upath, "w") as f:
+        f.write("{ broken")
+    check("usage: 损坏文件 read_usage → None", v.read_usage(upath) is None)
+    check("usage: 文件不存在 → None", v.read_usage(upath + ".nope") is None)
+
     badcfg = os.path.join(d, "bad_config.json")
     with open(badcfg, "w") as f:
         f.write("{ broken")

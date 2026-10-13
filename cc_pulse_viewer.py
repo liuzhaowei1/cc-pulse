@@ -83,7 +83,10 @@ THEMES = {
 }
 
 TITLEBAR_H = 26
-GRIP_H = 8                  # 底边高度调节热区厚度（px）：与背景同色不可见，靠近即变拉伸光标
+USAGE_H = 20                # 标题栏下的额度行高度（px）；无额度数据时整行隐藏、不占高度
+USAGE_WARN = 60             # 额度已用 ≥60% 黄、≥85% 红（与 ctx-band 同阈值）
+USAGE_CRIT = 85
+GRIP_H = 8                 # 底边高度调节热区厚度（px）：与背景同色不可见，靠近即变拉伸光标
 # 固定行高（px）。可视条数 = 可用高度 // ROW_H，随面板高度自适应（拉高 → 多排几条，
 # 而非把固定几条拉胖）。40 = 紧凑单行（一行文字 + 舒适留白），偏紧/偏松改这个数即可。
 ROW_H = 40
@@ -171,6 +174,11 @@ def config_path():
     return os.path.join(base_dir(), "config.json")
 
 
+def usage_path():
+    # 由 statusLine 脚本 cc-pulse-usage.py 写入（不放 state/，免得被当成会话文件扫描）
+    return os.path.join(base_dir(), "usage.json")
+
+
 def log_path():
     return os.path.join(state_dir(), "reporter.log")
 
@@ -202,6 +210,43 @@ def atomic_write_json(path, obj):
         except OSError:
             pass
         raise
+
+
+def read_usage(path):
+    """读额度文件；不存在/损坏返回 None。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            u = json.load(f)
+        return u if isinstance(u, dict) else None
+    except Exception:
+        return None
+
+
+def usage_segments(u, now_ts):
+    """额度 → [(文本, 级别)]，依次为 5h 已用% · 5h 重置时刻 · 周已用%。
+    级别 normal/warn/crit/sep。窗口已过 resets_at 视为失效显示 --；两个窗口都失效/缺失返回 None（整行隐藏）。"""
+    def live(key):
+        w = (u or {}).get(key)
+        try:
+            if w and float(w["resets_at"]) > now_ts:
+                return float(w["used_percentage"]), float(w["resets_at"])
+        except Exception:
+            pass
+        return None
+
+    def pct(v):
+        if v is None:
+            return ("--", "normal")
+        p = int(round(v[0]))
+        lv = "crit" if p >= USAGE_CRIT else "warn" if p >= USAGE_WARN else "normal"
+        return ("%d%%" % p, lv)
+
+    five, week = live("five_hour"), live("seven_day")
+    if five is None and week is None:
+        return None
+    reset = datetime.fromtimestamp(five[1]).strftime("%H:%M") if five else "--"
+    sep = (" · ", "sep")
+    return [pct(five), sep, (reset, "normal"), sep, pct(week)]
 
 
 def format_tokens(t):
@@ -478,7 +523,11 @@ class CCPulseViewer:
         self._drag = (0, 0)
         self._last_sig = None        # 列表渲染签名，避免无变化重绘
         self._last_pet_sig = None    # 宠物渲染签名
-        self._prev_status = {}       # session_id → 上一轮 status，用于红点边沿检测
+        self._usage = None           # 额度文件内容缓存（按 mtime 失效）
+        self._usage_mtime = None
+        self._usage_sig = None       # 额度行渲染签名
+        self._usage_shown = False    # 额度行是否已 pack（影响主体可用高度）
+        self._prev_status = {}      # session_id → 上一轮 status，用于红点边沿检测
         self._last_alert_t = 0.0     # 上次播放提示音的时刻（节流）
         self._stop_evt = threading.Event()   # 通知后台 reaper 线程退出
 
@@ -528,6 +577,7 @@ class CCPulseViewer:
     def _build_ui(self):
         self._build_titlebar()
         self._build_resize_grip()      # 底边拖拽热区（须在主体之前 pack，占住底部）
+        self._build_usage_bar()        # 先建不 pack，有数据时插到主体之前
         self._build_body()
 
     # ── 主题切换：整体重建主面板控件（颜色散在各控件上，逐个改色不如重建可靠）──────
@@ -535,11 +585,13 @@ class CCPulseViewer:
         self.T = THEMES[self.cfg["theme"]]
         self.root.configure(bg=self.T["bg"])
         apply_border(self.root, self.T)
-        for w in (self.titlebar, self.resize_grip, self.canvas):
+        for w in (self.titlebar, self.resize_grip, self.usage_bar, self.canvas):
             w.destroy()
         self._build_ui()
         self._last_sig = None
         self._last_pet_sig = None
+        self._usage_sig = None
+        self._usage_shown = False
         # 设置面板开着的话按新配色重开，留在原位置
         if self.settings_win is not None:
             pos = (self.settings_win.winfo_x(), self.settings_win.winfo_y())
@@ -590,6 +642,57 @@ class CCPulseViewer:
         # 置顶 ON → 高亮强调色；OFF → 暗色
         self.btn_pin.config(
             fg=self.T["accent"] if self.cfg["always_on_top"] else self.T["fg_dim"])
+
+    # ── 额度行：5h 已用% · 5h 重置时刻 · 周已用%（数据来自 statusLine 脚本）────────
+    def _build_usage_bar(self):
+        bar = tk.Canvas(self.root, bg=self.T["bg"], height=USAGE_H,
+                        highlightthickness=0, bd=0)
+        bar.bind("<Button-1>", self._drag_start, add="+")
+        bar.bind("<B1-Motion>", self._drag_move, add="+")
+        bar.bind("<ButtonRelease-1>", self._drag_end, add="+")
+        self.usage_bar = bar
+
+    def _update_usage(self):
+        """每轮调用：文件变了才重读；过期判定每轮做（重置时刻一过即变 --/隐藏）。
+        返回 True 表示额度行显隐变化（主体可用高度变了，调用方需强制重绘）。"""
+        try:
+            mtime = os.stat(usage_path()).st_mtime
+        except OSError:
+            mtime = None
+        if mtime != self._usage_mtime:
+            self._usage_mtime = mtime
+            self._usage = read_usage(usage_path()) if mtime else None
+        segs = usage_segments(self._usage, time.time())
+
+        changed = (segs is not None) != self._usage_shown
+        if changed:
+            if segs is None:
+                self.usage_bar.pack_forget()
+            else:
+                self.usage_bar.pack(side="top", fill="x", before=self.canvas)
+            self._usage_shown = segs is not None
+        if segs is None:
+            return changed
+
+        fsize = max(6, self._font_size() - 1)
+        sig = (tuple(segs), fsize, self._body_w())
+        if sig == self._usage_sig:
+            return changed
+        self._usage_sig = sig
+
+        T = self.T
+        color = {"normal": T["fg_dim"], "sep": T["fg_dim"],
+                 "warn": T["dots"][STATUS_BUSY], "crit": T["dots"][STATUS_NEEDS_YOU]}
+        font = tkfont.Font(family="Microsoft YaHei UI", size=fsize)
+        c = self.usage_bar
+        c.delete("all")
+        # 逐段左对齐排开，不换行；窗口太窄时右侧自然被画布裁掉
+        x, pad, yc = 12, 12, USAGE_H / 2
+        for text, lv in segs:
+            c.create_text(x, yc, text=text, fill=color[lv], font=font, anchor="w")
+            x += font.measure(text)
+        c.create_line(pad, USAGE_H - 1, self._body_w() - pad, USAGE_H - 1, fill=T["sep"])
+        return changed
 
     # ── 主体 (Canvas: 列表 / 宠物共用) ────────────────────────────────────────
     def _build_body(self):
@@ -674,7 +777,9 @@ class CCPulseViewer:
         return self.root.winfo_width() - self._border_px()
 
     def _body_h(self):
-        return max(40, self.root.winfo_height() - TITLEBAR_H - GRIP_H - self._border_px())
+        usage_h = USAGE_H if self._usage_shown else 0
+        return max(40, self.root.winfo_height() - TITLEBAR_H - usage_h - GRIP_H
+                   - self._border_px())
 
     def _row_h(self):
         # 固定行高：拉高面板时不放大每行，而是多容纳几行（放不下走滚动）。
@@ -715,6 +820,9 @@ class CCPulseViewer:
     # ── 主轮询：决定列表态 / 宠物态并渲染 (F2/F3) ─────────────────────────────
     def _tick(self):
         try:
+            if self._update_usage():
+                self._last_sig = None       # 额度行显隐改变了主体高度，按新高度重排
+                self._last_pet_sig = None
             states = read_states(state_dir())
             self._check_alerts(states)
             if states:

@@ -53,6 +53,7 @@
 - **零侵入** — 无需修改 Claude Code 代码，纯 hook 实现
 - **实时状态** — 🟡 忙 / 🔴 等你操作 / 🟢 已完成，一目了然
 - **上下文用量** — 每行右侧显示该会话当前上下文占用 token 数（如 `79k`），数据取自 transcript 最后一轮 `usage`（`input + cache_creation + cache_read`，与 `/context` 同源），是绝对值而非百分比——200k / 1m 等不同窗口都通用，一眼看出哪个会话快满了
+- **账号额度** — 标题栏下一行显示 `31% · 14:10 · 7%`：5 小时额度已用 · 5 小时窗口重置时刻 · 周额度已用，≥60% 变黄、≥85% 变红；数据来自 Claude Code 官方 statusLine 的 `rate_limits`（与 `/usage` 同源），仅 Pro/Max 订阅可用，无数据时整行隐藏；窗口调窄时右侧直接截断不换行（配置见 2.6，可选）
 - **高度可调** — 列表行数随面板高度自适应：拖窗口**底边**即可调高（也可在设置里填高度），同开多个会话时一屏多看几条
 - **最小化到托盘** — 收进系统托盘常驻（像微信，始终在托盘）：左键唤起主面板、右键菜单「显示 / 退出」；托盘图标由像素「睡觉」宠物经 `ctypes` 调 `Shell_NotifyIcon` 程序化生成，零第三方依赖，仅 Windows 生效（其他平台自动 no-op）
 - **声音提醒** — 任意会话转入 🔴「等你操作」的那一刻播放提示音（`assets/notify.wav`），可在设置里「红点亮起播放提示音」开关；仅 Windows 生效，WSL/其他平台自动静默降级；换音效直接覆盖 `assets/notify.wav`（须为 WAV）即可
@@ -83,6 +84,7 @@
 **本仓库包含：**
 - ✅ F2–F6 展示端（Windows tkinter 悬浮窗）
 - ✅ F1 上报端（Claude Code hook 脚本）
+- ✅ 额度上报端（Claude Code statusLine 脚本，可选）
 - ✅ 像素宠物引擎（纯代码 6 形象）
 - ✅ 系统托盘（纯 ctypes，零依赖）
 
@@ -248,6 +250,27 @@ echo %USERNAME%
    - 项目配置：`项目根目录/.claude/settings.json`（仅当前项目生效）
    - 推荐用全局配置
 
+#### 2.6 配置额度行（可选）
+
+Claude Code 只在 statusLine 脚本的输入里提供账号额度（hook 拿不到），所以额度行要单独接一个 statusLine：
+
+```bash
+cp hooks/cc-pulse-usage.py ~/.claude/hooks/   # 与 cc-pulse-report.py 放同一目录（复用它的目录探测）
+```
+
+`~/.claude/settings.json` 顶层加：
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "python3 ~/.claude/hooks/cc-pulse-usage.py"
+}
+```
+
+- 脚本不输出任何内容，终端状态栏外观不变；每次回复结束时更新 `usage.json`
+- statusLine 只能配一个命令。**已有自己的 statusLine** 时，在你的脚本里把收到的 stdin 原样转一份给它即可，例如 bash：`input=$(cat); echo "$input" | python3 ~/.claude/hooks/cc-pulse-usage.py`
+- 多个会话同时写时按窗口重置时刻合并（同一窗口用量只增不减），不会被旧会话的过时数据回退；非订阅路由（无 `rate_limits`）不改动文件
+
 ### Step 3: 启动 Viewer
 
 ```bash
@@ -289,6 +312,17 @@ echo "$env:LOCALAPPDATA\cc-pulse\state"
 # Linux/WSL
 ls -la "/mnt/c/Users/你的用户名/AppData/Local/cc-pulse/state/"
 ```
+
+### 额度文件
+
+`usage.json` 放在 state 目录的上一级（`cc-pulse/usage.json`），由 statusLine 脚本写入：
+
+```json
+{"five_hour": {"used_percentage": 31.0, "resets_at": 1791871800},
+ "seven_day": {"used_percentage": 7.0, "resets_at": 1792396800}}
+```
+
+`resets_at` 为 Unix 秒；某窗口过了重置时刻显示 `--`，两个窗口都失效则隐藏额度行。
 
 ### 状态文件格式
 
@@ -332,7 +366,8 @@ CC Pulse/
 ├── pixelpet.py                 # 程序化像素宠物引擎（纯代码 6 形象）
 ├── tray.py                     # 系统托盘图标（纯 ctypes 调 Shell_NotifyIcon，零依赖；仅 Windows）
 ├── hooks/
-│   └── cc-pulse-report.py      # F1 上报端 hook（需要复制到 ~/.claude/hooks/）
+│   ├── cc-pulse-report.py      # F1 上报端 hook（需要复制到 ~/.claude/hooks/）
+│   └── cc-pulse-usage.py       # 额度上报端 statusLine（可选，同样复制到 ~/.claude/hooks/）
 ├── assets/
 │   ├── 发呆.gif                # 像素宠物：发呆形态
 │   ├── 思考.gif                # 像素宠物：思考形态
@@ -351,7 +386,7 @@ CC Pulse/
 ├── tools/
 │   ├── make_icon.py            # 用 Pillow 生成应用图标 app.ico
 │   ├── make_pet_gif.py         # 用 Pillow 重新生成宠物 gif（仅备料时用）
-│   └── test_logic.py           # 纯逻辑 headless 单测（31 项）
+│   └── test_logic.py           # 纯逻辑 headless 单测（53 项）
 └── CC-Pulse-PRD.md             # 需求文档（v1.2）
 ```
 
@@ -392,6 +427,7 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 |------|----------|------|
 | F2 主窗体 | `overrideredirect`+`-topmost`+`-alpha`+ 标题栏拖拽 | 无边框置顶半透明可拖拽 |
 | F2 列表 | `_tick`/`_render_list`（每 200ms 轮询） | 按 `updated_at` 降序，label + 三态色点，默认 3 行可滚动 |
+| 额度行 | `_update_usage`/`usage_segments`（随轮询，`usage.json` 变了才重读） | 标题栏下 `5h% · 重置时刻 · 周%`，阈值着色，过期显示 `--`，无数据隐藏且不占高度 |
 | F3 宠物 | `pixelpet.py`/`_render_pet`/`_animate` | 无会话→**程序化像素宠物**（纯代码逐帧，无图片）：6 形象（发呆/思考/敲代码/庆祝/星光/睡觉）每 10–20s 随机切换；1.5s 防抖 |
 | F4 标题栏 | `toggle_pin`/`toggle_settings`/`close` | 📌 置顶切换 / ⚙️ 设置 / ✕ 退出 |
 | F5 设置 | `_open_settings` + `_save_config` | 透明度(20–100)/字号偏移(-5~+5)/浅色主题/宽/高/红点提示音开关，即时原子持久化 |
