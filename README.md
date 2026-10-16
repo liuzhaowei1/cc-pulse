@@ -269,7 +269,7 @@ cp hooks/cc-pulse-usage.py ~/.claude/hooks/   # 与 cc-pulse-report.py 放同一
 
 - 脚本不输出任何内容，终端状态栏外观不变；每次回复结束时更新 `usage.json`
 - statusLine 只能配一个命令。**已有自己的 statusLine** 时，在你的脚本里把收到的 stdin 原样转一份给它即可，例如 bash：`input=$(cat); echo "$input" | python3 ~/.claude/hooks/cc-pulse-usage.py`
-- 多个会话同时写时按窗口重置时刻合并（同一窗口用量只增不减），不会被旧会话的过时数据回退；非订阅路由（无 `rate_limits`）不改动文件
+- 多个会话同时写时按窗口重置时刻合并（重置时刻更早的过时数据会被忽略；同一窗口取最新值，所以用重置卡清零后也会随之更新）；非订阅路由（无 `rate_limits`）不改动文件
 
 ### Step 3: 启动 Viewer
 

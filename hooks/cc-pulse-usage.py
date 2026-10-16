@@ -11,8 +11,8 @@ Claude Code 只在 statusLine 的 stdin 里提供账号额度 rate_limits（hook
 不向 stdout 输出任何内容 → 终端状态栏不多占一行。
 
 合并规则（多会话并发写同一文件，旧会话可能带着过时数据触发）：
-    每个窗口按 resets_at 判新旧：更晚 = 新窗口，直接采用；相同 = 同一窗口，用量只增不减，取较大值；
-    更早 = 过时数据，忽略。stdin 无 rate_limits（非订阅路由/首轮回复前）时不动文件。
+    每个窗口按 resets_at 判新旧：更晚或相同 = 采用最新值（相同窗口不再取较大值，
+    否则重置卡清零用量后会被旧的 100% 卡住）；更早 = 过时数据，忽略。stdin 无 rate_limits（非订阅路由/首轮回复前）时不动文件。
 
 设计铁律：任何异常都不得影响 claude 运行 —— 全程 try/except + exit 0。
 """
@@ -49,10 +49,7 @@ def pick_window(new, old):
     if n is None:
         return old
     o_reset = old.get("resets_at", 0)
-    if n_reset > o_reset:
-        return n
-    if n_reset == o_reset:
-        n["used_percentage"] = max(n["used_percentage"], old.get("used_percentage", 0))
+    if n_reset >= o_reset:      # 相同窗口也直接采用新值：重置卡只清零用量、不换 resets_at
         return n
     return old
 
