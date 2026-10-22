@@ -111,6 +111,7 @@ CONFIG_DEFAULTS = {
     "font_level": 0,           # 字号档位：以默认字号为 0，-5..+5（每档 ±1px）
     "sound_enabled": True,     # 红点亮起时播放提示音（assets/notify.wav）
     "theme": "dark",           # "dark" / "light"
+    "dock_edge": None,         # 贴边隐藏：None=自由浮动；"left"/"right"/"top"=贴在该边（pos 存展开时的坐标）
 }
 CONFIG_RANGES = {
     "opacity": (20, 100),
@@ -128,6 +129,20 @@ except ImportError:
     winsound = None
 
 ALERT_THROTTLE_S = 1.0     # 红点提示音最短重复间隔，避免多会话同时变红或抖动连响
+
+# 贴边隐藏：拖到工作区左/右/上边缘松手即吸附；鼠标离开后滑出屏幕，只留一条带色点的窄边
+DOCK_EDGES = ("left", "right", "top")    # 下边是任务栏，不吸附
+DOCK_SNAP = 20             # 松手时离边缘 ≤ 此距离(px)即吸附
+DOCK_STRIP = 12            # 收起后露出的窄边厚度(px)，每个会话画一个色点
+DOCK_DOT = 6               # 窄边色点直径(px)
+DOCK_DOT_GAP = 5           # 窄边色点间距(px)
+DOCK_EXPAND_S = 0.15       # 鼠标在窄边上停留多久才展开（防路过误触）
+DOCK_COLLAPSE_S = 0.6      # 鼠标离开面板多久后收起
+DOCK_POP_S = 2.0           # 贴边收起时有会话变红：自动弹出的时长
+DOCK_ANIM_MS = 180         # 滑入/滑出动画总时长
+DOCK_FRAME_MS = 20         # 动画帧间隔
+DOCK_POLL_MS = 50          # 贴边时轮询鼠标位置的周期（tk 的 Enter/Leave 在子控件间会抖，不用）
+DOCK_BLINK_S = 0.5         # 窄边红点闪烁半周期
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -332,6 +347,8 @@ def clamp_config(cfg):
     out["sound_enabled"] = bool(out["sound_enabled"])
     if out["theme"] not in THEMES:
         out["theme"] = CONFIG_DEFAULTS["theme"]
+    if out["dock_edge"] not in DOCK_EDGES:
+        out["dock_edge"] = None
     for k in ("pos_x", "pos_y"):
         if out[k] is not None:
             try:
@@ -446,6 +463,65 @@ def is_offscreen(x, y, width, height, screen_w, screen_h):
     return False
 
 
+def work_area(screen_w, screen_h):
+    """主屏工作区 (left, top, right, bottom)，即扣掉任务栏的部分。
+    Windows 走 SPI_GETWORKAREA；取不到（或非 Windows）退回整屏。
+    进程未声明 DPI 感知，tk 坐标与该 API 返回值同为系统缩放后的逻辑坐标，可直接比较。"""
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            import ctypes.wintypes as wintypes
+            r = wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):
+                return r.left, r.top, r.right, r.bottom
+        except Exception as e:
+            log("work_area failed: %r" % e)
+    return 0, 0, screen_w, screen_h
+
+
+def dock_edge_for(x, y, width, height, area, snap=DOCK_SNAP):
+    """松手位置离哪条可吸附边 ≤ snap（越过边缘也算）；都不靠则 None。左右优先于上。"""
+    left, top, right, _bottom = area
+    if x - left <= snap:
+        return "left"
+    if right - (x + width) <= snap:
+        return "right"
+    if y - top <= snap:
+        return "top"
+    return None
+
+
+def dock_geometry(edge, x, y, width, height, area, collapsed, strip=DOCK_STRIP):
+    """贴边时窗口左上角坐标。展开＝整窗贴齐该边；收起＝滑出屏幕只露 strip 宽。
+    沿边方向的坐标夹在工作区内（面板比工作区还长时贴齐起点）。"""
+    left, top, right, bottom = area
+    if edge in ("left", "right"):
+        y = max(top, min(bottom - height, y))
+        if edge == "left":
+            x = left - (width - strip) if collapsed else left
+        else:
+            x = right - strip if collapsed else right - width
+    elif edge == "top":
+        x = max(left, min(right - width, x))
+        y = top - (height - strip) if collapsed else top
+    return x, y
+
+
+def strip_dots(statuses, length, dot=DOCK_DOT, gap=DOCK_DOT_GAP):
+    """窄边色点沿边排布：按给定顺序居中排开，返回 [(偏移, status)]（偏移=色点起点）。
+    放不下时截掉多余的，但保证最紧急的状态一定在内（先按紧急度挑，再按原顺序排）。"""
+    cap = max(0, (length - 2 * gap + gap) // (dot + gap))
+    if not statuses or cap == 0:
+        return []
+    if len(statuses) > cap:
+        keep = sorted(range(len(statuses)),
+                      key=lambda i: (STATUS_RANK.get(statuses[i], 9), i))[:cap]
+        statuses = [statuses[i] for i in sorted(keep)]
+    span = len(statuses) * dot + (len(statuses) - 1) * gap
+    start = (length - span) // 2
+    return [(start + i * (dot + gap), st) for i, st in enumerate(statuses)]
+
+
 def truncate_to_width(font, text, max_px):
     """按像素宽截断并加省略号。"""
     if font.measure(text) <= max_px:
@@ -512,6 +588,18 @@ class CCPulseViewer:
         self.root.attributes("-topmost", self.cfg["always_on_top"])
         self.root.attributes("-alpha", self.cfg["opacity"] / 100.0)
 
+        # 贴边隐藏状态（_place_window 会按 config 恢复贴边，须先就位）
+        self.dock_edge = None        # None=自由浮动；否则为贴住的边
+        self.dock_collapsed = False  # 贴边时是否已收起成窄边
+        self._dock_xy = (0, 0)       # 贴边展开时的窗口坐标（沿边位置以此为准，持久化也存它）
+        self._dock_anim = None       # 进行中的滑动动画 after id
+        self._hover_since = None     # 收起态：鼠标进入窄边的时刻
+        self._leave_since = None     # 展开态：鼠标离开面板的时刻
+        self._pop_until = 0.0        # 变红自动弹出的截止时刻
+        self._dock_strip_sig = None  # 窄边渲染签名
+        self._dragging = False       # 拖拽/拉伸中不做收起判定
+        self._states = []            # 最近一轮会话快照（窄边色点用）
+
         self._place_window()
 
         # 状态
@@ -556,6 +644,7 @@ class CCPulseViewer:
         threading.Thread(target=self._reap_loop, name="reaper", daemon=True).start()
         self.root.after(ANIM_MS, self._animate)
         self.root.after(150, self._poll_tray)    # 消费托盘线程的动作
+        self.root.after(DOCK_POLL_MS, self._dock_poll)
 
     # ── 窗口放置 ────────────────────────────────────────────────────────────
     def _place_window(self):
@@ -565,12 +654,28 @@ class CCPulseViewer:
         x, y = self.cfg["pos_x"], self.cfg["pos_y"]
         if is_offscreen(x, y, w, h, sw, sh):
             x, y = primary_geometry(w, h, sw, sh)
+        edge = self.cfg["dock_edge"]
+        if edge:
+            # 上次退出时贴着边：先展开贴好，鼠标不在上面的话 _dock_poll 随即收起
+            self.dock_edge = edge
+            x, y = dock_geometry(edge, x, y, w, h, self._work_area(), collapsed=False)
+            self._dock_xy = (x, y)
+            self.root.attributes("-topmost", True)
         self.root.geometry("%dx%d+%d+%d" % (w, h, x, y))
 
     def _resize(self):
         w, h = self.cfg["width"], self.cfg["height"]
         x = self.root.winfo_x()
         y = self.root.winfo_y()
+        if self.dock_edge:
+            # 贴边时改尺寸：按新尺寸重新贴齐（右边/上边贴住的话坐标随尺寸变）
+            x, y = dock_geometry(self.dock_edge, self._dock_xy[0], self._dock_xy[1],
+                                 w, h, self._work_area(), collapsed=False)
+            self._dock_xy = (x, y)
+            if self.dock_collapsed:
+                x, y = dock_geometry(self.dock_edge, x, y, w, h, self._work_area(),
+                                     collapsed=True)
+            self._dock_strip_sig = None
         self.root.geometry("%dx%d+%d+%d" % (w, h, x, y))
         self._last_sig = None  # 强制重绘
 
@@ -579,19 +684,23 @@ class CCPulseViewer:
         self._build_resize_grip()      # 底边拖拽热区（须在主体之前 pack，占住底部）
         self._build_usage_bar()        # 先建不 pack，有数据时插到主体之前
         self._build_body()
+        self._build_dock_strip()       # 贴边收起时才 place 到露出的那一侧
 
     # ── 主题切换：整体重建主面板控件（颜色散在各控件上，逐个改色不如重建可靠）──────
     def _apply_theme(self):
         self.T = THEMES[self.cfg["theme"]]
         self.root.configure(bg=self.T["bg"])
         apply_border(self.root, self.T)
-        for w in (self.titlebar, self.resize_grip, self.usage_bar, self.canvas):
+        for w in (self.titlebar, self.resize_grip, self.usage_bar, self.canvas,
+                  self.dock_strip):
             w.destroy()
         self._build_ui()
         self._last_sig = None
         self._last_pet_sig = None
         self._usage_sig = None
         self._usage_shown = False
+        if self.dock_edge and self.dock_collapsed:
+            self._show_dock_strip()
         # 设置面板开着的话按新配色重开，留在原位置
         if self.settings_win is not None:
             pos = (self.settings_win.winfo_x(), self.settings_win.winfo_y())
@@ -745,18 +854,189 @@ class CCPulseViewer:
 
     # ── 拖拽 ──────────────────────────────────────────────────────────────────
     def _drag_start(self, e):
+        self._dragging = True
         self._drag = (e.x_root - self.root.winfo_x(),
                       e.y_root - self.root.winfo_y())
 
     def _drag_move(self, e):
+        if self.dock_edge:
+            self._undock()          # 从边上拖开即回到自由浮动；松手时再判要不要重新吸附
         x = e.x_root - self._drag[0]
         y = e.y_root - self._drag[1]
         self.root.geometry("+%d+%d" % (x, y))
 
-    def _drag_end(self, _e):
-        self.cfg["pos_x"] = self.root.winfo_x()
-        self.cfg["pos_y"] = self.root.winfo_y()
+    def _drag_end(self, e):
+        self._dragging = False
+        # 用事件坐标而非 winfo_x：最后一次 geometry 可能还没在空闲时刻生效，winfo 会落后一拍
+        x = e.x_root - self._drag[0]
+        y = e.y_root - self._drag[1]
+        if self.dock_edge:
+            x, y = self._dock_xy        # 只是点了一下没拖动：仍贴着边，存展开坐标
+        else:
+            edge = dock_edge_for(x, y, self.root.winfo_width(), self.root.winfo_height(),
+                                 self._work_area())
+            if edge:
+                self._dock(edge, x, y)
+                x, y = self._dock_xy
+        self.cfg["pos_x"], self.cfg["pos_y"] = x, y
+        self.cfg["dock_edge"] = self.dock_edge
         self._save_config()
+
+    # ── 贴边隐藏 ──────────────────────────────────────────────────────────────
+    def _work_area(self):
+        return work_area(self.root.winfo_screenwidth(), self.root.winfo_screenheight())
+
+    def _want_topmost(self):
+        # 贴边时强制置顶（否则窄边被别的窗口盖住）；自由浮动时听 📌
+        return bool(self.dock_edge) or self.cfg["always_on_top"]
+
+    def _dock(self, edge, x, y):
+        """从 (x, y) 吸附到 edge：先展开贴齐，鼠标离开后由 _dock_poll 收起。"""
+        x, y = dock_geometry(edge, x, y,
+                             self.root.winfo_width(), self.root.winfo_height(),
+                             self._work_area(), collapsed=False)
+        self.dock_edge = edge
+        self.dock_collapsed = False
+        self._dock_xy = (x, y)
+        self._hover_since = self._leave_since = None
+        self.root.attributes("-topmost", True)
+        self._slide_to(x, y)
+
+    def _undock(self):
+        self._cancel_slide()
+        self.dock_edge = None
+        self.dock_collapsed = False
+        self._hide_dock_strip()
+        self.root.attributes("-topmost", self._want_topmost())
+
+    def _set_collapsed(self, collapsed):
+        if not self.dock_edge or collapsed == self.dock_collapsed:
+            return
+        self.dock_collapsed = collapsed
+        self._hover_since = self._leave_since = None
+        x, y = dock_geometry(self.dock_edge, self._dock_xy[0], self._dock_xy[1],
+                             self.root.winfo_width(), self.root.winfo_height(),
+                             self._work_area(), collapsed)
+        if not collapsed:
+            self._hide_dock_strip()     # 展开：先撤窄边再滑出，露出完整面板
+        self._slide_to(x, y, on_done=self._show_dock_strip if collapsed else None)
+
+    def _cancel_slide(self):
+        if self._dock_anim is not None:
+            self.root.after_cancel(self._dock_anim)
+            self._dock_anim = None
+
+    def _slide_to(self, tx, ty, on_done=None):
+        """ease-out 滑动到 (tx, ty)；新动画会接管旧动画，从当前位置继续。"""
+        self._cancel_slide()
+        self.root.update_idletasks()    # 先让挂起的 geometry 生效，起点才准
+        sx, sy = self.root.winfo_x(), self.root.winfo_y()
+        n = max(1, DOCK_ANIM_MS // DOCK_FRAME_MS)
+
+        def step(i):
+            t = i / n
+            k = 1 - (1 - t) ** 3
+            self.root.geometry("+%d+%d" % (round(sx + (tx - sx) * k),
+                                           round(sy + (ty - sy) * k)))
+            if i < n:
+                self._dock_anim = self.root.after(DOCK_FRAME_MS, step, i + 1)
+            else:
+                self._dock_anim = None
+                if on_done:
+                    on_done()
+        step(1)
+
+    def _pop_dock(self, seconds=DOCK_POP_S):
+        """贴边收起时临时弹出 seconds 秒（变红提醒 / 托盘点击）。鼠标移上去则按悬停逻辑接管。"""
+        if not self.dock_edge:
+            return
+        self._pop_until = time.time() + seconds
+        self._set_collapsed(False)
+
+    def _pointer_inside(self):
+        """鼠标是否在面板屏幕内可见的部分上（收起时即窄边）。"""
+        px, py = self.root.winfo_pointerxy()
+        l, t, r, b = self._work_area()
+        x0, y0 = max(l, self.root.winfo_x()), max(t, self.root.winfo_y())
+        x1 = min(r, self.root.winfo_x() + self.root.winfo_width())
+        y1 = min(b, self.root.winfo_y() + self.root.winfo_height())
+        return x0 <= px < x1 and y0 <= py < y1
+
+    def _dock_poll(self):
+        try:
+            if self.dock_edge and self._dock_anim is None and not self._dragging \
+                    and self.root.state() != "withdrawn":
+                now = time.time()
+                inside = self._pointer_inside()
+                if self.dock_collapsed:
+                    if inside:
+                        if self._hover_since is None:
+                            self._hover_since = now
+                        elif now - self._hover_since >= DOCK_EXPAND_S:
+                            self._set_collapsed(False)
+                    else:
+                        self._hover_since = None
+                    self._draw_dock_strip()
+                else:
+                    # 设置面板开着不收（它贴在主面板旁边，收起会把人晾在原地）
+                    if inside or self.settings_win is not None:
+                        self._leave_since = None
+                    elif self._leave_since is None:
+                        self._leave_since = now
+                    # 离开计时在弹出期间照走，弹出一结束且已离开够久即收
+                    if self._leave_since is not None and now >= self._pop_until \
+                            and now - self._leave_since >= DOCK_COLLAPSE_S:
+                        self._set_collapsed(True)
+        except Exception as e:
+            log("dock poll error: %r" % e)
+        finally:
+            self.root.after(DOCK_POLL_MS, self._dock_poll)
+
+    def _build_dock_strip(self):
+        self.dock_strip = tk.Canvas(self.root, bg=self.T["title_bg"],
+                                    highlightthickness=0, bd=0, cursor="hand2")
+        # 点击窄边立即展开（悬停之外的兜底）
+        self.dock_strip.bind("<Button-1>", lambda e: self._set_collapsed(False), add="+")
+        self._dock_strip_sig = None
+
+    def _show_dock_strip(self):
+        """把窄边盖到面板仍露在屏幕内的那一侧。"""
+        s = self.dock_strip
+        if self.dock_edge == "right":
+            s.place(x=0, y=0, width=DOCK_STRIP, relheight=1)
+        elif self.dock_edge == "left":
+            s.place(relx=1, y=0, anchor="ne", width=DOCK_STRIP, relheight=1)
+        else:
+            s.place(x=0, rely=1, anchor="sw", relwidth=1, height=DOCK_STRIP)
+        tk.Misc.lift(s)        # Canvas.lift 是图元置顶，这里要的是控件层级
+        self._dock_strip_sig = None
+        self._draw_dock_strip()
+
+    def _hide_dock_strip(self):
+        self.dock_strip.place_forget()
+
+    def _draw_dock_strip(self):
+        if not (self.dock_edge and self.dock_collapsed):
+            return
+        vertical = self.dock_edge != "top"
+        length = self.root.winfo_height() if vertical else self.root.winfo_width()
+        blink_on = int(time.time() / DOCK_BLINK_S) % 2 == 0
+        statuses = [s["status"] for s in self._states]
+        dots = strip_dots(statuses, length)
+        sig = (self.dock_edge, length, tuple(dots),
+               blink_on and STATUS_NEEDS_YOU in statuses)
+        if sig == self._dock_strip_sig:
+            return
+        self._dock_strip_sig = sig
+        c = self.dock_strip
+        c.delete("all")
+        a = (DOCK_STRIP - DOCK_DOT) // 2       # 色点在窄边厚度方向居中
+        for off, st in dots:
+            if st == STATUS_NEEDS_YOU and not blink_on:
+                continue                       # 红点闪烁：灭的半周期不画
+            color = self.T["dots"].get(st, self.T["fg_dim"])
+            x0, y0 = (a, off) if vertical else (off, a)
+            c.create_oval(x0, y0, x0 + DOCK_DOT, y0 + DOCK_DOT, fill=color, outline="")
 
     def _on_configure(self, _e):
         pass
@@ -802,6 +1082,8 @@ class CCPulseViewer:
         self._prev_status = cur
         if rose:
             self._play_alert()
+            if self.dock_collapsed:
+                self._pop_dock()
 
     def _play_alert(self):
         """异步播放 assets/notify.wav（不阻塞轮询）。带节流；任何失败仅记日志。"""
@@ -824,6 +1106,7 @@ class CCPulseViewer:
                 self._last_sig = None       # 额度行显隐改变了主体高度，按新高度重排
                 self._last_pet_sig = None
             states = read_states(state_dir())
+            self._states = states
             self._check_alerts(states)
             if states:
                 self.empty_since = None
@@ -978,13 +1261,17 @@ class CCPulseViewer:
     # ── 标题栏动作 ────────────────────────────────────────────────────────────
     def toggle_pin(self):
         self.cfg["always_on_top"] = not self.cfg["always_on_top"]
-        self.root.attributes("-topmost", self.cfg["always_on_top"])
+        self.root.attributes("-topmost", self._want_topmost())
         self._refresh_pin()
         self._save_config()
 
     def close(self):
-        self.cfg["pos_x"] = self.root.winfo_x()
-        self.cfg["pos_y"] = self.root.winfo_y()
+        if self.dock_edge:
+            self.cfg["pos_x"], self.cfg["pos_y"] = self._dock_xy   # 收起态坐标在屏外，存展开坐标
+        else:
+            self.cfg["pos_x"] = self.root.winfo_x()
+            self.cfg["pos_y"] = self.root.winfo_y()
+        self.cfg["dock_edge"] = self.dock_edge
         self._save_config()
         self._stop_evt.set()
         if self.tray is not None:
@@ -1011,8 +1298,10 @@ class CCPulseViewer:
             self.root.overrideredirect(True)    # 部分环境 deiconify 会丢无边框，重置
             self.root.attributes("-topmost", True)    # 临时顶到最前，压过被 Win+D 顶起的桌面层
             self.root.lift()
-            if not self.cfg["always_on_top"]:
+            if not self._want_topmost():
                 self.root.after(100, lambda: self.root.attributes("-topmost", False))
+            if self.dock_collapsed:
+                self._pop_dock()          # 贴边收起中：滑出来亮一下，鼠标不碰则自动收回
         except Exception as e:
             log("restore failed: %r" % e)
 

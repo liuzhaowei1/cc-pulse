@@ -208,6 +208,37 @@ def main():
     px, py = v.primary_geometry(260, 200, 1920, 1080)
     check("primary: 默认落点在主屏右上", px == 1920 - 260 - 16 and py == 48)
 
+    # ── 贴边隐藏 ──
+    area = (0, 0, 1920, 1040)      # 下方 40px 任务栏
+    check("dock: 贴左", v.dock_edge_for(15, 300, 260, 200, area) == "left")
+    check("dock: 越过左边也算", v.dock_edge_for(-80, 300, 260, 200, area) == "left")
+    check("dock: 贴右", v.dock_edge_for(1920 - 260 - 10, 300, 260, 200, area) == "right")
+    check("dock: 贴上", v.dock_edge_for(600, 5, 260, 200, area) == "top")
+    check("dock: 中间不吸附", v.dock_edge_for(600, 300, 260, 200, area) is None)
+    check("dock: 贴下边不吸附", v.dock_edge_for(600, 1040 - 200, 260, 200, area) is None)
+    check("dock: 右展开贴齐", v.dock_geometry("right", 1600, 300, 260, 200, area, False) == (1660, 300))
+    check("dock: 右收起只露窄边",
+          v.dock_geometry("right", 1600, 300, 260, 200, area, True) == (1920 - v.DOCK_STRIP, 300))
+    check("dock: 左收起只露窄边",
+          v.dock_geometry("left", 5, 300, 260, 200, area, True) == (-(260 - v.DOCK_STRIP), 300))
+    check("dock: 上收起只露窄边",
+          v.dock_geometry("top", 600, 3, 260, 200, area, True) == (600, -(200 - v.DOCK_STRIP)))
+    check("dock: 沿边坐标夹进工作区（不压任务栏）",
+          v.dock_geometry("right", 1700, 950, 260, 200, area, False) == (1660, 840))
+    check("dock: 上边沿边坐标夹进工作区",
+          v.dock_geometry("top", 1800, 0, 260, 200, area, False) == (1660, 0))
+    dots = v.strip_dots(["busy", "done", "needs_you"], 200)
+    check("strip: 三个点按原顺序", [st for _, st in dots] == ["busy", "done", "needs_you"])
+    check("strip: 居中排布", abs(dots[0][0] - (200 - (dots[-1][0] + v.DOCK_DOT))) <= 1)
+    many = ["done"] * 40 + ["needs_you"]
+    kept = v.strip_dots(many, 120)
+    check("strip: 放不下时截断但保留红点",
+          len(kept) < len(many) and "needs_you" in [st for _, st in kept]
+          and kept[0][0] >= 0 and kept[-1][0] + v.DOCK_DOT <= 120)
+    check("strip: 无会话无点", v.strip_dots([], 200) == [])
+    check("config: dock_edge 非法值回退 None", v.clamp_config({"dock_edge": "bottom"})["dock_edge"] is None)
+    check("config: dock_edge 合法值保留", v.clamp_config({"dock_edge": "right"})["dock_edge"] == "right")
+
     # ── atomic_write_json ──
     apath = os.path.join(d, "atomic.json")
     v.atomic_write_json(apath, {"k": "值"})
