@@ -185,45 +185,69 @@ echo %USERNAME%
 
 #### 2.5 配置 Claude Code hooks
 
-编辑 `~/.claude/settings.json`，添加以下配置：
+编辑 `~/.claude/settings.json`，添加以下配置（每个事件下是「匹配组 → `hooks` 数组」两层，不能省掉里面那层 `hooks`，见[官方 hooks 文档](https://code.claude.com/docs/en/hooks)）：
 
 ```json
 {
   "hooks": {
     "SessionStart": [
       {
-        "type": "command",
-        "command": "python3 ~/.claude/hooks/cc-pulse-report.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/cc-pulse-report.py"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
       {
-        "type": "command",
-        "command": "python3 ~/.claude/hooks/cc-pulse-report.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/cc-pulse-report.py"
+          }
+        ]
       }
     ],
     "PreToolUse": [
       {
-        "type": "command",
-        "command": "python3 ~/.claude/hooks/cc-pulse-report.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/cc-pulse-report.py"
+          }
+        ]
       }
     ],
     "Notification": [
       {
-        "type": "command",
-        "command": "python3 ~/.claude/hooks/cc-pulse-report.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/cc-pulse-report.py"
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "type": "command",
-        "command": "python3 ~/.claude/hooks/cc-pulse-report.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/cc-pulse-report.py"
+          }
+        ]
       }
     ],
     "SessionEnd": [
       {
-        "type": "command",
-        "command": "python3 ~/.claude/hooks/cc-pulse-report.py"
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/cc-pulse-report.py"
+          }
+        ]
       }
     ]
   }
