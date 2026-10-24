@@ -110,6 +110,7 @@ CONFIG_DEFAULTS = {
     "always_on_top": True,
     "font_level": 0,           # 字号档位：以默认字号为 0，-5..+5（每档 ±1px）
     "sound_enabled": True,     # 红点亮起时播放提示音（assets/notify.wav）
+    "sound_done_enabled": True,  # 黄→绿（工作完成）时播放提示音（assets/done.wav）
     "theme": "dark",           # "dark" / "light"
     "dock_edge": None,         # 贴边隐藏：None=自由浮动；"left"/"right"/"top"=贴在该边（pos 存展开时的坐标）
 }
@@ -128,7 +129,7 @@ try:
 except ImportError:
     winsound = None
 
-ALERT_THROTTLE_S = 1.0     # 红点提示音最短重复间隔，避免多会话同时变红或抖动连响
+ALERT_THROTTLE_S = 1.0     # 每类提示音（红点 / 完成）各自的最短重复间隔，避免多会话同时变化或抖动连响
 
 # 贴边隐藏：拖到工作区左/右/上边缘松手即吸附；鼠标离开后滑出屏幕，只留一条带色点的窄边
 DOCK_EDGES = ("left", "right", "top")    # 下边是任务栏，不吸附
@@ -162,8 +163,20 @@ def asset_path(name):
     return os.path.join(root, "assets", name)
 
 
-# 红点提示音：固定文件，换音效直接覆盖 assets/notify.wav 即可（须为 WAV）
-ALERT_SOUND = asset_path("notify.wav")
+# 提示音：固定文件，换音效直接覆盖对应 WAV 即可（须为 WAV）
+ALERT_SOUND = asset_path("notify.wav")   # 红点（等你操作）
+DONE_SOUND = asset_path("done.wav")      # 黄→绿（工作完成）
+
+
+def alert_edges(prev, cur):
+    """对比两轮 {session_id: status}，返回 (红点亮起, 工作完成)。
+    红点：任意会话 非needs_you → needs_you；prev 无记录的新会话已是 needs_you 也算。
+    完成：任意会话 busy → done；新会话直接 done（SessionStart）或 viewer 刚启动读到的 done 不算。"""
+    rose = any(st == STATUS_NEEDS_YOU and prev.get(sid) != STATUS_NEEDS_YOU
+               for sid, st in cur.items())
+    done = any(st == STATUS_DONE and prev.get(sid) == STATUS_BUSY
+               for sid, st in cur.items())
+    return rose, done
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -345,6 +358,7 @@ def clamp_config(cfg):
             out[k] = CONFIG_DEFAULTS[k]
     out["always_on_top"] = bool(out["always_on_top"])
     out["sound_enabled"] = bool(out["sound_enabled"])
+    out["sound_done_enabled"] = bool(out["sound_done_enabled"])
     if out["theme"] not in THEMES:
         out["theme"] = CONFIG_DEFAULTS["theme"]
     if out["dock_edge"] not in DOCK_EDGES:
@@ -616,7 +630,8 @@ class CCPulseViewer:
         self._usage_sig = None       # 额度行渲染签名
         self._usage_shown = False    # 额度行是否已 pack（影响主体可用高度）
         self._prev_status = {}      # session_id → 上一轮 status，用于红点边沿检测
-        self._last_alert_t = 0.0     # 上次播放提示音的时刻（节流）
+        self._last_alert_t = 0.0     # 上次播放红点提示音的时刻（节流）
+        self._last_done_t = 0.0      # 上次播放完成提示音的时刻（节流，与红点独立）
         self._stop_evt = threading.Event()   # 通知后台 reaper 线程退出
 
         # 系统托盘（仅 Windows）。托盘线程经队列把动作回交主线程消费（tkinter 非线程安全）。
@@ -1071,33 +1086,36 @@ class CCPulseViewer:
 
     # ── 红点提示音 (F2-3 听觉增强) ────────────────────────────────────────────
     def _check_alerts(self, states):
-        """边沿检测：任意会话 非needs_you → needs_you 的那一刻播一次提示音。
-        每轮用当前快照整体替换 _prev_status，自然清理已消失的会话。
-        新出现且已是 needs_you 的会话（prev 无记录）也视为刚亮起。"""
+        """边沿检测（见 alert_edges）：红点亮起播红点音，黄→绿播完成音。
+        每轮用当前快照整体替换 _prev_status，自然清理已消失的会话。"""
         cur = {s["session_id"]: s["status"] for s in states}
-        rose = any(
-            st == STATUS_NEEDS_YOU and self._prev_status.get(sid) != STATUS_NEEDS_YOU
-            for sid, st in cur.items()
-        )
+        rose, done = alert_edges(self._prev_status, cur)
         self._prev_status = cur
         if rose:
             self._play_alert()
             if self.dock_collapsed:
                 self._pop_dock()
+        if done:
+            self._play_done()
 
-    def _play_alert(self):
-        """异步播放 assets/notify.wav（不阻塞轮询）。带节流；任何失败仅记日志。"""
-        if not self.cfg.get("sound_enabled", True) or winsound is None:
+    def _play_wav(self, path, cfg_key, last_attr):
+        """异步播放 WAV（不阻塞轮询）。按 last_attr 各自节流；任何失败仅记日志。"""
+        if not self.cfg.get(cfg_key, True) or winsound is None:
             return
         now = time.time()
-        if now - self._last_alert_t < ALERT_THROTTLE_S:
+        if now - getattr(self, last_attr) < ALERT_THROTTLE_S:
             return
-        self._last_alert_t = now
+        setattr(self, last_attr, now)
         try:
-            winsound.PlaySound(
-                ALERT_SOUND, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
         except Exception as e:
-            log("play alert failed: %r" % e)
+            log("play %s failed: %r" % (os.path.basename(path), e))
+
+    def _play_alert(self):
+        self._play_wav(ALERT_SOUND, "sound_enabled", "_last_alert_t")
+
+    def _play_done(self):
+        self._play_wav(DONE_SOUND, "sound_done_enabled", "_last_done_t")
 
     # ── 主轮询：决定列表态 / 宠物态并渲染 (F2/F3) ─────────────────────────────
     def _tick(self):
@@ -1434,6 +1452,8 @@ class CCPulseViewer:
         _mk_sep()
         self.var_sound = tk.BooleanVar(value=self.cfg["sound_enabled"])
         _mk_check("红点亮起播放提示音", self.var_sound, self._on_sound)
+        self.var_sound_done = tk.BooleanVar(value=self.cfg["sound_done_enabled"])
+        _mk_check("工作完成播放提示音", self.var_sound_done, self._on_sound_done)
 
         tk.Label(body, text="改动即时生效", bg=BG, fg=T["hint"],
                  font=("Microsoft YaHei UI", 7)).pack(pady=(6, 10))
@@ -1464,6 +1484,10 @@ class CCPulseViewer:
 
     def _on_sound(self, _v=None):
         self.cfg["sound_enabled"] = bool(self.var_sound.get())
+        self._save_config()
+
+    def _on_sound_done(self, _v=None):
+        self.cfg["sound_done_enabled"] = bool(self.var_sound_done.get())
         self._save_config()
 
     def _on_opacity(self, _v=None):

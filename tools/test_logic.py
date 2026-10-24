@@ -239,6 +239,45 @@ def main():
     check("config: dock_edge 非法值回退 None", v.clamp_config({"dock_edge": "bottom"})["dock_edge"] is None)
     check("config: dock_edge 合法值保留", v.clamp_config({"dock_edge": "right"})["dock_edge"] == "right")
 
+    # ── 提示音边沿检测 / 开关 / 独立节流 ──
+    B, N, D = v.STATUS_BUSY, v.STATUS_NEEDS_YOU, v.STATUS_DONE
+    check("edge: busy→done 触发完成音", v.alert_edges({"a": B}, {"a": D}) == (False, True))
+    check("edge: 新会话直接 done 不响", v.alert_edges({}, {"a": D}) == (False, False))
+    check("edge: done→done 不响", v.alert_edges({"a": D}, {"a": D}) == (False, False))
+    check("edge: needs_you→done 不响完成音", v.alert_edges({"a": N}, {"a": D}) == (False, False))
+    check("edge: busy→needs_you 只响红点", v.alert_edges({"a": B}, {"a": N}) == (True, False))
+    check("edge: 新会话直接 needs_you 响红点", v.alert_edges({}, {"a": N}) == (True, False))
+    check("edge: 多会话同时红+完成两类都触发",
+          v.alert_edges({"a": B, "b": B}, {"a": N, "b": D}) == (True, True))
+    check("config: sound_done_enabled 默认开", v.clamp_config({})["sound_done_enabled"] is True)
+    check("config: sound_done_enabled 可关", v.clamp_config({"sound_done_enabled": False})["sound_done_enabled"] is False)
+
+    played = []
+    fake_ws = types.SimpleNamespace(SND_FILENAME=1, SND_ASYNC=2,
+                                    PlaySound=lambda path, fl: played.append(os.path.basename(path)))
+    real_ws = v.winsound
+    v.winsound = fake_ws
+    try:
+        app = types.SimpleNamespace(cfg={"sound_enabled": True, "sound_done_enabled": True},
+                                    _last_alert_t=0.0, _last_done_t=0.0)
+        play = lambda name: v.CCPulseViewer._play_wav(app, getattr(v, name), *(
+            ("sound_enabled", "_last_alert_t") if name == "ALERT_SOUND" else ("sound_done_enabled", "_last_done_t")))
+        play("ALERT_SOUND"); play("DONE_SOUND")
+        check("sound: 红点与完成各自独立节流（同一瞬间两个都响）", played == ["notify.wav", "done.wav"])
+        play("DONE_SOUND"); play("ALERT_SOUND")
+        check("sound: 同类在节流窗口内被吞", played == ["notify.wav", "done.wav"])
+        app.cfg["sound_done_enabled"] = False; app._last_done_t = 0.0
+        play("DONE_SOUND")
+        check("sound: 关闭完成音开关后不响", played == ["notify.wav", "done.wav"])
+        app.cfg["sound_enabled"] = False; app._last_alert_t = 0.0
+        app.cfg["sound_done_enabled"] = True
+        play("ALERT_SOUND"); play("DONE_SOUND")
+        check("sound: 两开关互不影响（红点关、完成开 → 只响完成）",
+              played == ["notify.wav", "done.wav", "done.wav"])
+    finally:
+        v.winsound = real_ws
+    check("assets: notify.wav / done.wav 存在", os.path.isfile(v.ALERT_SOUND) and os.path.isfile(v.DONE_SOUND))
+
     # ── atomic_write_json ──
     apath = os.path.join(d, "atomic.json")
     v.atomic_write_json(apath, {"k": "值"})
