@@ -1111,6 +1111,15 @@ class CCPulseViewer:
         except Exception as e:
             log("play %s failed: %r" % (os.path.basename(path), e))
 
+    def _preview_wav(self, path):
+        """打开开关时试听一次：绕过节流且不占节流计时；任何失败仅记日志。"""
+        if winsound is None:
+            return
+        try:
+            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        except Exception as e:
+            log("preview %s failed: %r" % (os.path.basename(path), e))
+
     def _play_alert(self):
         self._play_wav(ALERT_SOUND, "sound_enabled", "_last_alert_t")
 
@@ -1485,10 +1494,14 @@ class CCPulseViewer:
     def _on_sound(self, _v=None):
         self.cfg["sound_enabled"] = bool(self.var_sound.get())
         self._save_config()
+        if self.cfg["sound_enabled"]:
+            self._preview_wav(ALERT_SOUND)
 
     def _on_sound_done(self, _v=None):
         self.cfg["sound_done_enabled"] = bool(self.var_sound_done.get())
         self._save_config()
+        if self.cfg["sound_done_enabled"]:
+            self._preview_wav(DONE_SOUND)
 
     def _on_opacity(self, _v=None):
         v = max(CONFIG_RANGES["opacity"][0],

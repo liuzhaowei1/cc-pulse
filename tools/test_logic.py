@@ -274,6 +274,21 @@ def main():
         play("ALERT_SOUND"); play("DONE_SOUND")
         check("sound: 两开关互不影响（红点关、完成开 → 只响完成）",
               played == ["notify.wav", "done.wav", "done.wav"])
+        # 试听：开=响一次、关=不响；绕过节流且不改节流计时
+        played.clear()
+        pv = types.SimpleNamespace(cfg={"sound_enabled": True, "sound_done_enabled": True},
+                                   _last_alert_t=0.0, _last_done_t=0.0, _save_config=lambda: None,
+                                   var_sound=types.SimpleNamespace(get=lambda: True),
+                                   var_sound_done=types.SimpleNamespace(get=lambda: True))
+        pv._preview_wav = lambda path: v.CCPulseViewer._preview_wav(pv, path)
+        v.CCPulseViewer._on_sound(pv); v.CCPulseViewer._on_sound(pv)
+        v.CCPulseViewer._on_sound_done(pv)
+        check("preview: 勾选即响、连点不被节流吞", played == ["notify.wav", "notify.wav", "done.wav"])
+        check("preview: 不占用节流计时", pv._last_alert_t == 0.0 and pv._last_done_t == 0.0)
+        pv.var_sound = types.SimpleNamespace(get=lambda: False)
+        pv.var_sound_done = types.SimpleNamespace(get=lambda: False)
+        v.CCPulseViewer._on_sound(pv); v.CCPulseViewer._on_sound_done(pv)
+        check("preview: 关闭开关不响", len(played) == 3)
     finally:
         v.winsound = real_ws
     check("assets: notify.wav / done.wav 存在", os.path.isfile(v.ALERT_SOUND) and os.path.isfile(v.DONE_SOUND))
