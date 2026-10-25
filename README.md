@@ -56,7 +56,7 @@
 - **账号额度** — 标题栏下一行显示 `31% · 14:10 · 7%`：5 小时额度已用 · 5 小时窗口重置时刻 · 周额度已用，≥60% 变黄、≥85% 变红；数据来自 Claude Code 官方 statusLine 的 `rate_limits`（与 `/usage` 同源），仅 Pro/Max 订阅可用，无数据时整行隐藏；窗口调窄时右侧直接截断不换行（配置见 2.6，可选）
 - **高度可调** — 列表行数随面板高度自适应：拖窗口**底边**即可调高（也可在设置里填高度），同开多个会话时一屏多看几条
 - **贴边隐藏** — 把面板拖到屏幕左 / 右 / 上边缘（20px 内）松手即吸附；鼠标离开 0.6s 后滑出屏幕，只留一条 12px 窄边，每个会话一个色点（红点闪烁），收起时也能看出谁在等你；鼠标停在窄边上（或点击）即滑回。收起时有会话变红会自动弹出 2 秒；贴边期间强制置顶，拖离边缘恢复原置顶设置。下边是任务栏不吸附；多显示器暂按主屏工作区处理，仅 Windows 实测
-- **最小化到托盘** — 收进系统托盘常驻（像微信，始终在托盘）：左键唤起主面板、右键菜单「显示 / 退出」；托盘图标由像素「睡觉」宠物经 `ctypes` 调 `Shell_NotifyIcon` 程序化生成，零第三方依赖，仅 Windows 生效（其他平台自动 no-op）
+- **最小化到托盘** — 收进系统托盘常驻（像微信，始终在托盘）：左键唤起主面板、右键菜单「显示 / 退出」；托盘图标读 `assets/app.ico`（读不到时回退为程序生成的像素「睡觉」宠物），经 `ctypes` 调 `Shell_NotifyIcon`，零第三方依赖，仅 Windows 生效（其他平台自动 no-op）
 - **声音提醒** — 任意会话转入 🔴「等你操作」的那一刻播放提示音（`assets/notify.wav`），从 🟡 忙转为 🟢 完成时播放另一条完成音（`assets/done.wav`）；两者在设置里各有独立开关（「红点亮起播放提示音」「工作完成播放提示音」），节流也各自独立；新会话启动直接是 🟢 不会响；仅 Windows 生效，WSL/其他平台自动静默降级；换音效直接覆盖对应 WAV（须为 WAV）即可
 - **深浅主题** — 设置面板勾选「浅色主题」即时切换深色/浅色，写入 `config.json`（`"theme": "dark" | "light"`）重启保留；浅色主题带 1px 描边，色点与宠物配色针对白底调深
 - **像素宠物** — 无会话时显示 6 种可爱形象，随机切换
@@ -402,7 +402,8 @@ CC Pulse/
 │   ├── 睡觉.gif                # 像素宠物：睡觉形态
 │   ├── demo-terminal.png       # 效果图：Claude Code 终端 + 桌面宠物
 │   ├── demo-states.png         # 效果图：三态状态展示
-│   ├── app.ico                 # 应用图标（橙色显示器 + 脉搏波形）
+│   ├── app.ico                 # 应用图标（橙色圆角方块 + 提示符 + 忙/等你/完成三态点），exe 与托盘共用
+│   ├── app.svg                 # 应用图标矢量源（make_icon.py 生成，便于查看）
 │   ├── notify.wav              # 红点提示音
 │   └── done.wav                # 完成提示音
 ├── run.bat                     # Windows 快速运行
@@ -410,7 +411,7 @@ CC Pulse/
 │   ├── build.bat               # PyInstaller 打包（cmd）
 │   └── build.ps1               # PyInstaller 打包（PowerShell，带 30MB 校验）
 ├── tools/
-│   ├── make_icon.py            # 用 Pillow 生成应用图标 app.ico
+│   ├── make_icon.py            # 生成应用图标 app.ico / app.svg（纯标准库，借本机 Edge 无头渲染 SVG）
 │   ├── make_pet_gif.py         # 用 Pillow 重新生成宠物 gif（仅备料时用）
 │   └── test_logic.py           # 纯逻辑 headless 单测（53 项）
 └── CC-Pulse-PRD.md             # 需求文档（v1.2）
@@ -431,7 +432,7 @@ powershell -ExecutionPolicy Bypass -File build\build.ps1
 产物：`dist\CCPulse.exe`。纯标准库 + 像素宠物引擎，PyInstaller onefile 通常 **8–12MB**，
 满足 ≤30MB；如需更小可装 UPX 再压。双击 exe 即用，无需 Python 环境。
 
-> exe 图标取自 `assets/app.ico`（橙色显示器 + 脉搏波形，呼应 “Pulse”）。打包脚本已带
+> exe 与托盘图标取自 `assets/app.ico`（橙色圆角方块 + 提示符 + 三态点）。打包脚本已带
 > `--icon assets/app.ico`；想换图标就改 `tools/make_icon.py` 重新生成 `app.ico` 再打包。
 
 ---

@@ -1,130 +1,117 @@
 # -*- coding: utf-8 -*-
+"""生成 assets/app.ico + assets/app.svg（Pulse 家族图标，方向 A「釉光」）。打包前运行一次即可。
+
+单一源＝下面的 SVG（同时写出 assets/app.svg 便于查看）。
+用 Edge 无头逐尺寸渲染成透明 PNG（≤32px 换粗线、去细节的小尺寸版），再打包成 PNG 条目的 ICO。
+纯标准库；需要本机装有 Edge。Edge 用临时 user-data-dir，不碰日常配置。
+CC Pulse / NetCheck 同族图标，两个仓库的 make_icon.py 除 KIND 外逐字相同。
 """
-CC Pulse 应用图标生成器
-=======================
-参考用户给的 "claude code" 显示器图标风格：
-  圆角层叠卡片 + 橙色描边显示器 + 奶白屏幕。
-本图标在屏幕里画一条心电/脉搏波形，呼应 "Pulse"。
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
 
-矢量超采样：在 1024 画布上用 PIL 绘制 → LANCZOS 降采样到各 ico 尺寸。
-产物：
-  assets/app.ico            多尺寸图标 (256/128/64/48/32/16)
-  assets/app_preview.png    深色桌面背景下的预览拼图（供肉眼审查）
-"""
-from PIL import Image, ImageDraw
+KIND = "cc"                     # cc / net / sys
+SIZES = (16, 20, 24, 30, 32, 40, 48, 64, 96, 128, 256)
+SMALL_MAX = 32                   # ≤ 此尺寸用小尺寸版
+EDGE = (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe")
 
-S = 1024  # 主画布边长
-
-# ── 调色板（取自参考图的 Claude 橙）──
-ORANGE      = (244, 124, 32, 255)   # 主橙
-ORANGE_PALE = (248, 211, 174, 255)  # 底卡浅橙
-CREAM       = (252, 244, 235, 255)  # 卡片奶白
-WHITE       = (255, 255, 255, 255)
+TILE = {"cc": ("#FFB68C", "#DC5F34"), "net": ("#6FE3F4", "#2563EB"), "sys": ("#C6B3FF", "#6A3BF5")}
+SQUIRCLE = "M128 8C214 8 248 42 248 128S214 248 128 248 8 214 8 128 42 8 128 8Z"
+RIM = "M128 9.5C213 9.5 246.5 43 246.5 128S213 246.5 128 246.5 9.5 213 9.5 128 43 9.5 128 9.5Z"
 
 
-def rr(d, box, r, **kw):
-    d.rounded_rectangle(box, radius=r, **kw)
+def glyph(kind, small):
+    """返回 (描线部分, 其余部分)。描线部分会额外画一层投影。"""
+    sw = 30 if small else 20
+    if kind == "cc":
+        r = 17 if small else 13
+        line = f'<path d="M58 92L98 128L58 164" stroke-width="{sw}"/>'
+        rest = "".join(f'<circle cx="{x}" cy="158" r="{r}" fill="{c}"/>'
+                       for x, c in ((132, "#FFC34D"), (164, "#FF6B5E"), (196, "#4ADE80")))
+    elif kind == "net":
+        line = f'<circle cx="120" cy="136" r="62" stroke-width="{sw}"/>'
+        rest = "" if small else (
+            '<g fill="none" stroke="#FFF" stroke-width="10">'
+            '<ellipse cx="120" cy="136" rx="26" ry="62"/><path d="M58 136H182"/></g>'
+            '<circle cx="180" cy="78" r="30" fill="none" stroke="#FFF" stroke-width="6" opacity="0.4"/>')
+        rest += f'<circle cx="180" cy="78" r="{22 if small else 15}" fill="#FFF"/>'
+    else:
+        line = f'<path d="M84 178V142M128 178V78M172 178V116" stroke-width="{36 if small else 28}"/>'
+        rest = f'<circle cx="172" cy="74" r="{22 if small else 15}" fill="#FFF"/>'
+    return line, rest
 
 
-def thick_polyline(d, pts, width, color):
-    """带圆角端点/拐点的折线（PIL line 默认是方头）。"""
-    d.line(pts, fill=color, width=width, joint="curve")
-    r = width // 2
-    for (x, y) in pts:
-        d.ellipse((x - r, y - r, x + r, y + r), fill=color)
+def svg(kind, small, px=256):
+    a, b = TILE[kind]
+    line, rest = glyph(kind, small)
+    cap = 'fill="none" stroke-linecap="round" stroke-linejoin="round"'
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{px}" height="{px}" viewBox="0 0 256 256">'
+        '<defs>'
+        f'<linearGradient id="t" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="{a}"/>'
+        f'<stop offset="1" stop-color="{b}"/></linearGradient>'
+        '<linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFF" stop-opacity="0.38"/>'
+        '<stop offset="0.5" stop-color="#FFF" stop-opacity="0"/></linearGradient>'
+        '<filter id="s" filterUnits="userSpaceOnUse" x="0" y="0" width="256" height="256"><feGaussianBlur stdDeviation="6"/></filter>'
+        '</defs>'
+        f'<path d="{SQUIRCLE}" fill="url(#t)"/><path d="{SQUIRCLE}" fill="url(#g)"/>'
+        f'<path d="{RIM}" fill="none" stroke="rgba(255,255,255,0.30)" stroke-width="3"/>'
+        f'<g {cap} stroke="#1A0A00" opacity="0.22" filter="url(#s)" transform="translate(0 6)">{line}</g>'
+        f'<g {cap} stroke="#FFF">{line}</g>{rest}</svg>')
 
 
-def render(size_canvas=S):
-    img = Image.new("RGBA", (size_canvas, size_canvas), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-
-    # ── 层叠卡片（底浅橙 + 上奶白，形成橙色外框）──
-    rr(d, (95, 95, 929, 929), 200, fill=ORANGE_PALE)
-    rr(d, (130, 130, 894, 894), 178, fill=CREAM)
-
-    # ── 显示器外框（橙）+ 屏幕（白）──
-    rr(d, (280, 300, 744, 628), 64, fill=ORANGE)          # 外框
-    rr(d, (320, 340, 704, 588), 34, fill=WHITE)           # 屏幕
-    # 顶部摄像头小凸起
-    rr(d, (470, 286, 554, 312), 13, fill=ORANGE)
-
-    # ── 底座（脖子梯形 + 圆角底条）──
-    d.polygon([(476, 628), (548, 628), (566, 690), (458, 690)], fill=ORANGE)
-    rr(d, (404, 686, 620, 724), 18, fill=ORANGE)
-
-    # ── 屏幕里的脉搏 / 心电波形 ──
-    pulse = [
-        (332, 470), (404, 470), (430, 470),
-        (452, 438), (470, 506),
-        (496, 330), (520, 560),
-        (548, 470), (574, 470),
-        (610, 448), (628, 492), (648, 470),
-        (692, 470),
-    ]
-    thick_polyline(d, pulse, width=22, color=ORANGE)
-
-    return img
+def png_size(data):
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise RuntimeError("不是 PNG")
+    return struct.unpack(">II", data[16:24])
 
 
-def render_small(size_canvas=S):
-    """小尺寸专用：放大显示器、加粗、简化波形，去掉摄像头凸起，
-    保证 16/32px 下仍利落可辨。"""
-    img = Image.new("RGBA", (size_canvas, size_canvas), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-
-    rr(d, (40, 40, 984, 984), 170, fill=ORANGE_PALE)
-    rr(d, (78, 78, 946, 946), 150, fill=CREAM)
-
-    rr(d, (170, 250, 854, 720), 80, fill=ORANGE)
-    rr(d, (230, 310, 794, 660), 46, fill=WHITE)
-    d.polygon([(450, 720), (574, 720), (602, 800), (422, 800)], fill=ORANGE)
-    rr(d, (330, 796, 694, 846), 24, fill=ORANGE)
-
-    pulse = [
-        (250, 500), (420, 500), (470, 500),
-        (510, 360), (560, 640),
-        (610, 500), (700, 500), (774, 500),
-    ]
-    thick_polyline(d, pulse, width=40, color=ORANGE)
-    return img
+def render(edge, tmp, size):
+    html = os.path.join(tmp, f"i{size}.html")
+    out = os.path.join(tmp, f"i{size}.png")
+    with open(html, "w", encoding="utf-8") as f:
+        f.write('<!doctype html><html><body style="margin:0;background:transparent">'
+                + svg(KIND, size <= SMALL_MAX, size) + "</body></html>")
+    subprocess.run([edge, "--headless", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
+                    f"--user-data-dir={os.path.join(tmp, 'prof')}", "--force-device-scale-factor=1",
+                    "--default-background-color=00000000", f"--window-size={size},{size}",
+                    f"--screenshot={out}", "file:///" + html.replace("\\", "/")],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=False)
+    with open(out, "rb") as f:
+        data = f.read()
+    if png_size(data) != (size, size):
+        raise RuntimeError(f"{size}px 渲染尺寸不对：{png_size(data)}")
+    return data
 
 
 def main():
-    import os
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    edge = next((p for p in EDGE if os.path.exists(p)), None)
+    if not edge:
+        sys.exit("找不到 Edge")
+    here = os.path.dirname(os.path.abspath(__file__))
     assets = os.path.join(here, "assets")
-    os.makedirs(assets, exist_ok=True)
-
-    master = render()
-    small = render_small()
-
-    # 按尺寸分别嵌入：大尺寸用细节版，<=32 用加粗简化版
-    def pick(s):
-        src = master if s >= 48 else small
-        return src.resize((s, s), Image.LANCZOS)
-
-    sizes = [256, 128, 64, 48, 32, 16]
-    imgs = [pick(s) for s in sizes]
-    ico_path = os.path.join(assets, "app.ico")
-    imgs[0].save(ico_path, format="ICO",
-                 sizes=[(s, s) for s in sizes], append_images=imgs[1:])
-    print("written", ico_path)
-
-    # ── 深色桌面预览拼图：实际嵌入的各尺寸位图并排（底对齐）──
-    bg = (32, 33, 36, 255)
-    pad = 28
-    prev_sizes = [256, 64, 48, 32, 16]
-    W = sum(prev_sizes) + pad * (len(prev_sizes) + 1)
-    H = 256 + pad * 2
-    canvas = Image.new("RGBA", (W, H), bg)
-    x = pad
-    for s in prev_sizes:
-        ic = pick(s)
-        canvas.alpha_composite(ic, (x, pad + (256 - s)))
-        x += s + pad
-    prev = os.path.join(assets, "app_preview.png")
-    canvas.convert("RGB").save(prev)
-    print("written", prev)
+    if not os.path.isdir(assets):                       # CC Pulse 的脚本在 tools/ 下
+        assets = os.path.join(os.path.dirname(here), "assets")
+    tmp = tempfile.mkdtemp(prefix="pulseicon_")
+    try:
+        pngs = [render(edge, tmp, s) for s in SIZES]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    out = struct.pack("<HHH", 0, 1, len(SIZES))
+    off = 6 + 16 * len(SIZES)
+    for s, d in zip(SIZES, pngs):
+        out += struct.pack("<BBBBHHII", s % 256, s % 256, 0, 0, 1, 32, len(d), off)
+        off += len(d)
+    out += b"".join(pngs)
+    with open(os.path.join(assets, "app.ico"), "wb") as f:
+        f.write(out)
+    with open(os.path.join(assets, "app.svg"), "w", encoding="utf-8") as f:
+        f.write(svg(KIND, False))
+    print(os.path.join(assets, "app.ico"), len(out), "bytes,", len(SIZES), "sizes")
 
 
 if __name__ == "__main__":

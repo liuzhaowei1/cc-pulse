@@ -641,7 +641,7 @@ class CCPulseViewer:
             try:
                 import tray as _tray
                 self.tray = _tray.TrayIcon(
-                    tip="CC Pulse",
+                    tip="CC Pulse", icon_file=asset_path("app.ico"),
                     on_show=lambda: self._tray_q.put("show"),
                     on_exit=lambda: self._tray_q.put("exit"))
                 self.tray.start()

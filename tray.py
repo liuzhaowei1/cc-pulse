@@ -12,7 +12,7 @@ CC Pulse — Windows 系统托盘图标（纯 ctypes 调 Shell_NotifyIcon，零�
     托盘回调消息（WM_TRAY）在该线程的 WndProc 中处理。
   · on_show / on_exit 在托盘线程被调用——调用方应把它们接到线程安全队列，
     再由 tkinter 主线程消费（tkinter 非线程安全）。
-  · 托盘图标用 pixelpet 的「睡觉」形象某一帧像素，程序内生成 HICON（无图片资源）。
+  · 托盘图标优先读调用方传入的 .ico（icon_file）；读不到时用 pixelpet 的「睡觉」形象某一帧像素，程序内生成 HICON。
   · 非 Windows 平台：TrayIcon.supported=False，所有方法 no-op（便于 WSL 下静态检查）。
 """
 import sys
@@ -177,6 +177,8 @@ if IS_WIN:
     user32.CreateIconIndirect.argtypes = [POINTER(ICONINFO)]
     user32.DestroyIcon.restype = BOOL
     user32.DestroyIcon.argtypes = [HICON]
+    user32.LoadImageW.restype = HANDLE
+    user32.LoadImageW.argtypes = [HINSTANCE, LPCWSTR, UINT, c_int, c_int, UINT]
 
     kernel32.GetModuleHandleW.restype = HMODULE
     kernel32.GetModuleHandleW.argtypes = [LPCWSTR]
@@ -253,7 +255,7 @@ class TrayIcon:
     """系统托盘图标控制器。start() 一次（建窗口+消息循环线程）；
     add()/remove() 在最小化/恢复时显隐图标；stop() 退出时收尾。"""
 
-    def __init__(self, tip="CC Pulse", on_show=None, on_exit=None):
+    def __init__(self, tip="CC Pulse", on_show=None, on_exit=None, icon_file=None):
         self.supported = IS_WIN
         self.tip = tip
         self.on_show = on_show or (lambda: None)
@@ -266,6 +268,7 @@ class TrayIcon:
         self._ready = threading.Event()
         self._wndproc_cb = None
         self._class_name = "CCPulseTrayWnd"
+        self._icon_file = icon_file     # .ico 路径，优先；读不到再用宠物帧
         self._hinst = None
 
     # ── 生命周期 ──────────────────────────────────────────────────────────────
@@ -290,9 +293,14 @@ class TrayIcon:
                 0, self._class_name, "CC Pulse", 0, 0, 0, 0, 0,
                 None, None, self._hinst, None)
             try:
-                import pixelpet
-                self._hicon = _make_hicon(
-                    pixelpet.form_sleep(0), pixelpet.LOGICAL_W, pixelpet.LOGICAL_H, 32)
+                self._hicon = None
+                if self._icon_file:
+                    # 未开 DPI 感知，SM_CXSMICON 恒为 16，按它取会被放大发糊；取 32 交给系统缩小
+                    self._hicon = user32.LoadImageW(None, self._icon_file, 1, 32, 32, 0x10)  # IMAGE_ICON, LR_LOADFROMFILE
+                if not self._hicon:
+                    import pixelpet
+                    self._hicon = _make_hicon(
+                        pixelpet.form_sleep(0), pixelpet.LOGICAL_W, pixelpet.LOGICAL_H, 32)
             except Exception:
                 self._hicon = user32.LoadCursorW(None, _MAKEINTRESOURCE(32512))
         except Exception:
