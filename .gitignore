@@ -8,8 +8,10 @@ env/
 venv/
 .venv/
 
-# Build artifacts
-build/
+# Build artifacts（build/ 下只收录打包脚本，PyInstaller 中间产物照旧忽略）
+/build/*
+!/build/build.bat
+!/build/build.ps1
 dist/
 *.egg-info/
 *.spec
